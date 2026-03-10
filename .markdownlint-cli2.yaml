@@ -1,0 +1,7 @@
+config:
+  MD013:
+    line_length: 120
+    code_blocks: false
+  MD024: false
+fix: true
+gitignore: true

@@ -1,0 +1,19 @@
+name: Markdownlint
+
+on: [pull_request]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-slim
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98
+    - name: Lint files
+      uses: DavidAnson/markdownlint-cli2-action@07035fd053f7be764496c0f8d8f9f41f98305101
+      with:
+          config: .markdownlint-cli2.yaml
+          globs: '**/*.md'
