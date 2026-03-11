@@ -51,6 +51,18 @@ Follow these guidelines for formatting and structuring your markdown content:
   line breaks for long paragraphs.
 - Whitespace: Use blank lines to separate sections and improve readability. Avoid excessive whitespace.
 
+## Post-Edit Verification
+
+After editing any `.md` or `.mdx` file, run the following command and resolve all reported
+errors before considering the task complete:
+
+```shell
+npx markdownlint-cli2 <edited-file>
+```
+
+This closes the feedback loop so violations are caught and fixed immediately rather than
+relying on an external CI run.
+
 ## Validation Requirements
 
 Ensure compliance with the following validation requirements:
