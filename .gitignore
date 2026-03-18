@@ -5,3 +5,6 @@ apm_modules/
 !.github/skills/golang/
 !.github/skills/markdown/
 !.github/skills/powershell/
+
+# Vale
+.styles/
