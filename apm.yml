@@ -1,0 +1,7 @@
+name: agentic
+version: 1.0.0
+description: APM configuration for the agentic project
+
+dependencies:
+  apm:
+    - anthropics/skills/skills/skill-creator

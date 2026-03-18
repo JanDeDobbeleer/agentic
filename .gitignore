@@ -1,0 +1,7 @@
+# APM
+apm_modules/
+.github/skills/*
+!.github/skills/conventional-commit/
+!.github/skills/golang/
+!.github/skills/markdown/
+!.github/skills/powershell/
