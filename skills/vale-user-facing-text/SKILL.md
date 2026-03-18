@@ -56,7 +56,10 @@ For later runs, skip sync if that folder already exists.
 
 ## Validation Workflow
 
-1. Identify all touched files containing user-facing prose.
+1. Identify all touched files containing user-facing prose. This includes:
+   - `.md` and `.mdx` files edited or created in this change
+   - Source files (`.go`, `.py`, `.ts`, etc.) that contain comments or docstrings
+     with human-readable explanations rather than code identifiers
 2. Ensure style packages are present: if `<SKILL_DIR>/config/.styles/` is absent,
    run `vale sync --config <SKILL_DIR>/config/.vale.ini` before proceeding.
 3. Run Vale against each edited Markdown file:
@@ -65,11 +68,13 @@ For later runs, skip sync if that folder already exists.
 vale --config <SKILL_DIR>/config/.vale.ini <edited-file>
 ```
 
-4. For user-facing prose in non-Markdown locations (for example inline code
-  comments), copy the prose into a temporary `.md` file and validate it:
+4. For user-facing prose in non-Markdown locations (such as inline code
+  comments), copy the prose into a temporary `.md` file and validate it.
+  Name the temp file `_vale_tmp.md` and place it next to the source file.
+  Delete it once validation is complete, never commit it.
 
 ```shell
-vale --config <SKILL_DIR>/config/.vale.ini <temporary-markdown-file>
+vale --config <SKILL_DIR>/config/.vale.ini _vale_tmp.md
 ```
 
 5. Apply the wording fixes back to the source while preserving technical
