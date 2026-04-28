@@ -409,7 +409,7 @@ linters catch real bugs and style violations that will be flagged in CI or code 
    golangci-lint run
    ```
 
-After steps 1–2, always run `git diff` to review auto-applied changes before staging them.
+After steps 1–3, always run `git diff` to review auto-applied changes before staging them.
 All four steps must complete with zero errors before the commit is created.
 
 #### Platform-specific files (`_unix.go`, `_windows.go`, `_darwin.go`)
@@ -418,7 +418,7 @@ If you add or modify a file with a platform-specific suffix, also cross-compile 
 issues the local OS linter skips. On Windows, run:
 
 ```powershell
-$env:GOOS = "linux"; go build ./...
+$env:GOOS = "linux"; go build ./...; $env:GOOS = ""
 ```
 
 On Linux/macOS, run:
