@@ -346,11 +346,23 @@ for _, item := range items {
 - Write clear, descriptive commit messages
 - Review diffs before committing
 
-### Post-Edit Code Quality Commands
+### Pre-Commit Quality Gate
 
-After making any Go code changes, run the following commands to ensure code quality and consistency:
+**REQUIRED BEFORE EVERY COMMIT.** Run the following commands in sequence after any Go code
+change, and only commit once all of them pass with zero errors. Never skip this step — these
+linters catch real bugs and style violations that will be flagged in CI or code review.
 
-1. **Field Alignment**: Optimize struct field ordering for memory efficiency
+1. **Code Modernization**: Apply modern Go best practices — this rewrites files in place
+
+   ```bash
+   modernize --fix "./..."
+   ```
+
+   > **Important:** `modernize` modifies source files (e.g. replacing `strings.Split`
+   > with `strings.SplitSeq` for Go 1.24+ range loops). Always stage its changes and
+   > include them in the same commit as your feature code.
+
+2. **Field Alignment**: Optimize struct field ordering for memory efficiency — this rewrites files in place
 
    ```bash
    fieldalignment --fix "./..."
@@ -362,27 +374,32 @@ After making any Go code changes, run the following commands to ensure code qual
    > **Always use named fields** in struct literals (e.g. `{Case: "foo", Now: t}`)
    > so that the order of fields in the struct definition does not matter.
 
-2. **Code Modernization**: Apply modern Go best practices
-
-   ```bash
-   modernize --fix "./..."
-   ```
-
 3. **Dependency Management**: Clean up and organize module dependencies
 
    ```bash
    go mod tidy
    ```
 
-4. **Formatting and Linting**: Ensure code follows standards
+4. **Formatting and Linting**: Ensure code follows standards — **must report zero errors**
 
    ```bash
    gofmt -w .
    golangci-lint run
    ```
 
-These commands should be run in sequence after any Go code modifications to maintain
-code quality, performance, and consistency across the codebase.
+After steps 1–2, always run `git diff` to review auto-applied changes before staging them.
+All four steps must complete with zero errors before the commit is created.
+
+#### Common golangci-lint violations to fix proactively
+
+These rules frequently fire on new code and are quick to resolve before linting:
+
+| Linter | Trigger | Fix |
+|--------|---------|-----|
+| `goconst` | Same string literal appears 3+ times | Extract to a named `const` |
+| `gofmt` | Incorrect indentation or comment spacing | Run `gofmt -w .` — it fixes automatically |
+| `dupl` | Two functions/test cases with near-identical structure | Add `//nolint:dupl` with a brief explanation (e.g. `//nolint:dupl // identical table-driven structure is intentional`) |
+| `modernize` | `strings.Split` used in a `for range` (Go 1.24+) | Run `modernize --fix "./..."` — it fixes automatically |
 
 ## Common Pitfalls to Avoid
 
