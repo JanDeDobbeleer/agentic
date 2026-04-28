@@ -297,7 +297,7 @@ for _, item := range items {
 
 When a test mutates package-level variables (resolvers, loggers, clocks, `time.Local`, etc.),
 save the original value into a local variable and restore it via `t.Cleanup`. Never restore to a
-hardcoded value — you would overwrite whatever state preceded your test.
+hardcoded value; you would overwrite whatever state preceded your test.
 
 ```go
 // ✅ CORRECT: save original, restore original
@@ -371,20 +371,20 @@ defer func() { time.Local = time.FixedZone("UTC", 0) }()
 ### Pre-Commit Quality Gate
 
 **REQUIRED BEFORE EVERY COMMIT.** Run the following commands in sequence after any Go code
-change, and only commit once all of them pass with zero errors. Never skip this step — these
+change. Commit after all pass with zero errors. Never skip this step; these
 linters catch real bugs and style violations that will be flagged in CI or code review.
 
-1. **Code Modernization**: Apply modern Go best practices — this rewrites files in place
+1. **Code Modernization**: Apply modern Go best practices; this rewrites files in place
 
    ```bash
    modernize --fix "./..."
    ```
 
-   > **Important:** `modernize` modifies source files (e.g. replacing `strings.Split`
+   > `modernize` modifies source files (e.g. replacing `strings.Split`
    > with `strings.SplitSeq` for Go 1.24+ range loops). Always stage its changes and
    > include them in the same commit as your feature code.
 
-2. **Field Alignment**: Optimize struct field ordering for memory efficiency — this rewrites files in place
+2. **Field Alignment**: Optimize struct field ordering for memory efficiency; this rewrites files in place
 
    ```bash
    fieldalignment --fix "./..."
@@ -402,14 +402,14 @@ linters catch real bugs and style violations that will be flagged in CI or code 
    go mod tidy
    ```
 
-4. **Formatting and Linting**: Ensure code follows standards — **must report zero errors**
+4. **Formatting and Linting**: Ensure code follows standards (**must report zero errors**)
 
    ```bash
    gofmt -w .
    golangci-lint run
    ```
 
-After steps 1–3, always run `git diff` to review auto-applied changes before staging them.
+After steps 1 through 3, always run `git diff` to review auto-applied changes before staging them.
 All four steps must complete with zero errors before the commit is created.
 
 #### Platform-specific files (`_unix.go`, `_windows.go`, `_darwin.go`)
@@ -428,18 +428,18 @@ GOOS=windows go build ./...
 ```
 
 This catches import mismatches, missing symbols, and linter rules (like `modernize`
-`strings.SplitSeq`) that only apply on the non-host platform.
+`strings.SplitSeq`) that apply on the non-host platform.
 
-#### Common golangci-lint violations to fix proactively
+#### Common golangci-lint violations to fix before committing
 
 These rules frequently fire on new code and are quick to resolve before linting:
 
 | Linter | Trigger | Fix |
 | ------ | ------- | --- |
-| `goconst` | Same string literal appears 3+ times | Extract to a named `const` |
-| `gofmt` | Incorrect indentation or comment spacing | Run `gofmt -w .` — it fixes automatically |
+| `goconst` | Same string literal occurs 3+ times | Extract to a named `const` |
+| `gofmt` | Incorrect indentation or comment spacing | Run `gofmt -w .`; it fixes automatically |
 | `dupl` | Two functions/test cases with near-identical structure | Add `//nolint:dupl` with a brief reason comment |
-| `modernize` | `strings.Split` used in a `for range` (Go 1.24+) | Run `modernize --fix "./..."` — auto-fixes |
+| `modernize` | `strings.Split` used in a `for range` (Go 1.24+) | Run `modernize --fix "./..."` (auto-fixes) |
 
 ## Common Pitfalls to Avoid
 

@@ -5,9 +5,12 @@ description: "Autonomously optimize any Claude Code skill by running it repeated
 
 # Autoresearch for Skills
 
-Most skills work about 70% of the time. The other 30% you get garbage. The fix isn't to rewrite the skill from scratch. It's to let an agent run it dozens of times, score every output, and tighten the prompt until that 30% disappears.
+Most skills work about 70% of the time. The other 30% you get garbage. The fix isn't to rewrite
+the skill from scratch. It's to let an agent run it dozens of times, score every output, and
+tighten the prompt until that 30% disappears.
 
-This skill adapts Andrej Karpathy's autoresearch methodology (autonomous experimentation loops) to Claude Code skills. Instead of optimizing ML training code, we optimize skill prompts.
+This skill adapts Andrej Karpathy's autoresearch methodology (autonomous experimentation loops) to
+Claude Code skills. Instead of optimizing ML training code, we optimize skill prompts.
 
 ---
 
@@ -21,19 +24,27 @@ Take any existing skill, define what "good output" looks like as binary yes/no c
 4. Keeps mutations that improve the score, discards the rest
 5. Repeats until the score ceiling is hit or the user stops it
 
-**Output:** An improved SKILL.md + `results.tsv` log + `changelog.md` of every mutation attempted + a live HTML dashboard you can watch in your browser.
+**Output:** An improved SKILL.md + `results.tsv` log + `changelog.md` of every mutation
+attempted + a live HTML dashboard you can watch in your browser.
 
 ---
 
 ## before starting: gather context
 
-**STOP. Do not run any experiments until all fields below are confirmed with the user. Ask for any missing fields before proceeding.**
+**STOP. Do not run any experiments until all fields below are confirmed with the user.
+Ask for any missing fields before proceeding.**
 
 1. **Target skill** — Which skill do you want to optimize? (need the exact path to SKILL.md)
-2. **Test inputs** — What 3-5 different prompts/scenarios should we test the skill with? (variety matters — pick inputs that cover different use cases so we don't overfit to one scenario)
-3. **Eval criteria** — What 3-6 binary yes/no checks define a good output? (these are your "test questions" — see [references/eval-guide.md](references/eval-guide.md) for how to write good evals)
-4. **Runs per experiment** — How many times should we run the skill per mutation? Default: 5. (more runs = more reliable scores, but slower and more expensive. 5 is the sweet spot for most skills.)
-5. **Run interval** — How often should experiments cycle? Default: every 2 minutes. (shorter = faster iteration, but costs more)
+2. **Test inputs** — What 3-5 different prompts/scenarios should we test the skill with? (variety
+   matters — pick inputs that cover different use cases so we don't overfit to one scenario)
+3. **Eval criteria** — What 3-6 binary yes/no checks define a good output? (these are your
+   "test questions" — see [references/eval-guide.md](references/eval-guide.md) for how to write
+   good evals)
+4. **Runs per experiment** — How many times should we run the skill per mutation? Default: 5.
+   (more runs = more reliable scores, but slower and more expensive. 5 is the sweet spot for
+   most skills.)
+5. **Run interval** — How often should experiments cycle? Default: every 2 minutes. (shorter =
+   faster iteration, but costs more)
 6. **Budget cap** — Optional. Max number of experiment cycles before stopping. Default: no cap (runs until you stop it).
 
 ---
@@ -57,7 +68,7 @@ Convert the user's eval criteria into a structured test. Every check must be bin
 
 **Format each eval as:**
 
-```
+```text
 EVAL [number]: [Short name]
 Question: [Yes/no question about the output]
 Pass condition: [What "yes" looks like — be specific]
@@ -65,15 +76,19 @@ Fail condition: [What triggers a "no"]
 ```
 
 **Rules for good evals:**
+
 - Binary only. Yes or no. No "rate 1-7" scales. Scales compound variability and give unreliable results.
-- Specific enough to be consistent. "Is the text readable?" is too vague. "Are all words spelled correctly with no truncated sentences?" is testable.
-- Not so narrow that the skill games the eval. "Contains fewer than 200 words" will make the skill optimize for brevity at the expense of everything else.
+- Specific enough to be consistent. "Is the text readable?" is too vague. "Are all words spelled
+  correctly with no truncated sentences?" is testable.
+- Not so narrow that the skill games the eval. "Contains fewer than 200 words" will make the skill
+  optimize for brevity at the expense of everything else.
 - 3-6 evals is the sweet spot. More than that and the skill starts parroting eval criteria back instead of actually improving.
 
 See [references/eval-guide.md](references/eval-guide.md) for detailed examples of good vs bad evals.
 
 **Max score calculation:**
-```
+
+```text
 max_score = [number of evals] × [runs per experiment]
 ```
 
@@ -83,9 +98,13 @@ Example: 4 evals × 5 runs = max score of 20.
 
 ## step 3: generate the live dashboard
 
-Before running any experiments, create a dedicated research root folder at `research/autoresearch/` (if it doesn't exist) and a subfolder for the target skill at `research/autoresearch/[skill-name]/`. Create a live HTML dashboard at `research/autoresearch/[skill-name]/dashboard.html` and open it in the browser.
+Before running any experiments, create a dedicated research root folder at `research/autoresearch/`
+(if it doesn't exist) and a subfolder for the target skill at `research/autoresearch/[skill-name]/`.
+Create a live HTML dashboard at `research/autoresearch/[skill-name]/dashboard.html` and open it in
+the browser.
 
 The dashboard must:
+
 - Auto-refresh every 10 seconds (reads from results.tsv)
 - Show a score progression line chart (experiment number on X axis, pass rate % on Y axis)
 - Show a colored bar for each experiment: green = keep, red = discard, blue = baseline
@@ -94,9 +113,15 @@ The dashboard must:
 - Show current status: "Running experiment [N]..." or "Idle"
 - Use clean styling with soft colors (white background, pastel accents, clean sans-serif font)
 
-Generate the dashboard as a single self-contained HTML file with inline CSS and JavaScript. Use Chart.js loaded from CDN for the line chart. The JS should fetch `results.json` (which you update after each experiment alongside results.tsv) and re-render.
+Generate the dashboard as a single self-contained HTML file with inline CSS and JavaScript. Use
+Chart.js loaded from CDN for the line chart. The JS should fetch `results.json` (which you update
+after each experiment alongside results.tsv) and re-render.
 
-**Embed data as a fallback.** Browsers block `fetch()` for local `file://` URLs (same-origin policy). To ensure the dashboard works when opened directly from disk, embed the current `results.json` contents as an inline JavaScript constant (`const EMBEDDED = { … };`) at the top of the script block. The load function should attempt the fetch first, and on failure fall back to `EMBEDDED`:
+**Embed data as a fallback.** Browsers block `fetch()` for local `file://` URLs (same-origin
+policy). To ensure the dashboard works when opened directly from disk, embed the current
+`results.json` contents as an inline JavaScript constant (`const EMBEDDED = {  };`) at the top
+of the script block. The load function should attempt the fetch first, and on failure fall back to
+`EMBEDDED`:
 
 ```js
 const EMBEDDED = { /* paste current results.json contents here */ };
@@ -114,7 +139,8 @@ async function load() {
 
 Update the `EMBEDDED` constant after every experiment alongside `results.json` so both stay in sync.
 
-**Open it immediately** after creating it: `Start-Process dashboard.html` (Windows) or `open dashboard.html` (macOS) so the user can see it in their browser.
+**Open it immediately** after creating it: `Start-Process dashboard.html` (Windows) or
+`open dashboard.html` (macOS) so the user can see it in their browser.
 
 **Update `results.json`** after every experiment so the dashboard stays current. The JSON format:
 
@@ -142,7 +168,8 @@ Update the `EMBEDDED` constant after every experiment alongside `results.json` s
 }
 ```
 
-When the run finishes (user stops it or ceiling hit), update `status` to `"complete"` so the dashboard shows a "Done" state with final summary.
+When the run finishes (user stops it or ceiling hit), update `status` to `"complete"` so the
+dashboard shows a "Done" state with final summary.
 
 ---
 
@@ -161,12 +188,14 @@ Run the skill AS-IS before changing anything. This is experiment #0.
 
 **results.tsv format (tab-separated):**
 
-```
-experiment	score	max_score	pass_rate	status	description
-0	14	20	70.0%	baseline	original skill — no changes
+```tsv
+experiment score max_score pass_rate status description
+0 14 20 70.0% baseline original skill — no changes
 ```
 
-**IMPORTANT:** After establishing baseline, confirm the score with the user before proceeding. If baseline is already 90%+, the skill may not need optimization — ask the user if they want to continue.
+**IMPORTANT:** After establishing baseline, confirm the score with the user before proceeding.
+If baseline is already 90%+, the skill may not need optimization — ask the user if they want
+to continue.
 
 ---
 
@@ -176,7 +205,9 @@ This is the core autoresearch loop. Once started, run autonomously until stopped
 
 **LOOP:**
 
-1. **Analyze failures.** Look at which evals are failing most. Read the actual outputs that failed. Identify the pattern — is it a formatting issue? A missing instruction? An ambiguous directive?
+1. **Analyze failures.** Look at which evals are failing most. Read the actual outputs that
+   failed. Identify the pattern — is it a formatting issue? A missing instruction? An ambiguous
+   directive?
 
 2. **Form a hypothesis.** Pick ONE thing to change. Don't change 5 things at once — you won't know what helped.
 
@@ -209,12 +240,16 @@ This is the core autoresearch loop. Once started, run autonomously until stopped
 
 8. **Repeat.** Go back to step 1 of the loop.
 
-**NEVER STOP.** Once the loop starts, do not pause to ask the user if you should continue. They may be away from the computer. Run autonomously until:
+**NEVER STOP.** Once the loop starts, do not pause to ask the user if you should continue. They
+may be away from the computer. Run autonomously until:
+
 - The user manually stops you
 - You hit the budget cap (if one was set)
 - You hit 95%+ pass rate for 3 consecutive experiments (diminishing returns)
 
-**If you run out of ideas:** Re-read the failing outputs. Try combining two previous near-miss mutations. Try a completely different approach to the same problem. Try removing things instead of adding them. Simplification that maintains the score is a win.
+**If you run out of ideas:** Re-read the failing outputs. Try combining two previous near-miss
+mutations. Try a completely different approach to the same problem. Try removing things instead of
+adding them. Simplification that maintains the score is a win.
 
 ---
 
@@ -232,7 +267,8 @@ After each experiment (whether kept or discarded), append to `changelog.md`:
 **Failing outputs:** [Brief description of what still fails, if anything]
 ```
 
-This changelog is the most valuable artifact. It's a research log that any future agent (or smarter future model) can pick up and continue from.
+This changelog is the most valuable artifact. It's a research log that any future agent (or
+smarter future model) can pick up and continue from.
 
 ---
 
@@ -254,7 +290,7 @@ When the user returns or the loop stops, present:
 
 The skill produces four files in `research/autoresearch/[skill-name]/`:
 
-```
+```text
 research/
 └── autoresearch/
   └── [skill-name]/
@@ -269,14 +305,14 @@ Plus the improved SKILL.md saved back to its original location.
 
 **results.tsv example:**
 
-```
-experiment	score	max_score	pass_rate	status	description
-0	14	20	70.0%	baseline	original skill — no changes
-1	16	20	80.0%	keep	added explicit instruction to avoid numbering in diagrams
-2	16	20	80.0%	discard	tried enforcing left-to-right layout — no improvement
-3	18	20	90.0%	keep	added color palette hex codes instead of vague "pastel" description
-4	18	20	90.0%	discard	added anti-pattern for neon colors — no improvement
-5	19	20	95.0%	keep	added worked example showing correct label formatting
+```tsv
+experiment score max_score pass_rate status description
+0 14 20 70.0% baseline original skill — no changes
+1 16 20 80.0% keep added explicit instruction to avoid numbering in diagrams
+2 16 20 80.0% discard tried enforcing left-to-right layout — no improvement
+3 18 20 90.0% keep added color palette hex codes instead of vague "pastel" description
+4 18 20 90.0% discard added anti-pattern for neon colors — no improvement
+5 19 20 95.0% keep added worked example showing correct label formatting
 ```
 
 ---
@@ -284,9 +320,12 @@ experiment	score	max_score	pass_rate	status	description
 ## example: optimizing a diagram-generator skill
 
 **Context gathered:**
+
 - Target skill: `~/.claude/skills/diagram-generator/SKILL.md`
-- Test inputs: "OAuth flow diagram", "CI/CD pipeline", "microservices architecture", "user onboarding funnel", "database schema relationships"
-- Evals: (1) All text legible and spelled correctly? (2) Uses only pastel/soft colors? (3) Linear layout — left-to-right or top-to-bottom? (4) Free of numbers, ordinals, and ordering?
+- Test inputs: "OAuth flow diagram", "CI/CD pipeline", "microservices architecture",
+  "user onboarding funnel", "database schema relationships"
+- Evals: (1) All text legible and spelled correctly? (2) Uses only pastel/soft colors? (3) Linear
+  layout — left-to-right or top-to-bottom? (4) Free of numbers, ordinals, and ordering?
 - Runs per experiment: 10
 - Max score: 40
 
@@ -295,7 +334,8 @@ Generated 10 diagrams. Scored each against 4 evals. Result: 32/40 (80%).
 Common failures: 3 diagrams had numbered steps, 2 had bright red elements, 3 had illegible small text.
 
 **Experiment 1 — KEEP (35/40, 87.5%):**
-Change: Added "NEVER include step numbers, ordinal numbers (1st, 2nd), or any numerical ordering in diagrams" to the anti-patterns section.
+Change: Added "NEVER include step numbers, ordinal numbers (1st, 2nd), or any numerical ordering
+in diagrams" to the anti-patterns section.
 Result: Numbering failures dropped from 3 to 1. Other evals held steady.
 
 **Experiment 2 — DISCARD (34/40, 85%):**
@@ -311,10 +351,12 @@ Change: Added anti-pattern "Do NOT use red (#FF0000), orange (#FF8C00), or neon 
 Result: No change. The hex codes from experiment 3 already solved the color problem. Reverted to keep skill simpler.
 
 **Experiment 5 — KEEP (39/40, 97.5%):**
-Change: Added a worked example showing a correct diagram with properly formatted labels (no numbers, pastel fills, left-to-right flow, legible text).
+Change: Added a worked example showing a correct diagram with properly formatted labels (no
+numbers, pastel fills, left-to-right flow, legible text).
 Result: Hit 39/40. One remaining failure: a complex diagram with overlapping labels. Diminishing returns — stopped.
 
 **Final delivery:**
+
 - Baseline: 32/40 (80%) → Final: 39/40 (97.5%)
 - 5 experiments, 3 kept, 2 discarded
 - Top changes: specific hex codes for colors, explicit anti-numbering rule, worked example
@@ -325,10 +367,12 @@ Result: Hit 39/40. One remaining failure: a complex diagram with overlapping lab
 ## how this connects to other skills
 
 **What feeds into autoresearch:**
+
 - Any existing skill that needs optimization
 - User-defined eval criteria (or help them define evals using the eval guide)
 
 **What autoresearch feeds into:**
+
 - The improved skill replaces the original
 - The changelog can be passed to future models for continued optimization
 - The eval suite can be reused whenever the skill is updated
@@ -347,4 +391,5 @@ A good autoresearch run:
 6. **Didn't overfit** — the skill got better at the actual job, not just at passing the specific test inputs
 7. **Ran autonomously** — didn't stop to ask permission between experiments
 
-If the skill "passes" all evals but the actual output quality hasn't improved — the evals are bad, not the skill. Go back to step 2 and write better evals.
+If the skill "passes" all evals but the actual output quality hasn't improved  the evals are bad,
+not the skill. Go back to step 2 and write better evals.
