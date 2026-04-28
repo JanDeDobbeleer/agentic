@@ -3,6 +3,8 @@ name: golang
 description: >
   Go coding standards and conventions for this project. Apply when writing,
   reviewing, or refactoring any Go source file.
+triggers:
+  - on_commit
 ---
 
 # Go Development Instructions
@@ -291,6 +293,26 @@ for _, item := range items {
 - Use `testing.TB` interface for functions used in tests and benchmarks
 - Clean up resources using `t.Cleanup()`
 
+#### Global state: always save the original value and restore it
+
+When a test mutates package-level variables (resolvers, loggers, clocks, `time.Local`, etc.),
+save the original value into a local variable and restore it via `t.Cleanup`. Never restore to a
+hardcoded value — you would overwrite whatever state preceded your test.
+
+```go
+// ✅ CORRECT: save original, restore original
+origResolver := myPackageResolver
+t.Cleanup(func() { myPackageResolver = origResolver })
+myPackageResolver = fakeResolver
+
+origLocal := time.Local
+t.Cleanup(func() { time.Local = origLocal })
+time.Local = time.UTC
+
+// ❌ WRONG: restores to a hardcoded value instead of the pre-test value
+defer func() { time.Local = time.FixedZone("UTC", 0) }()
+```
+
 ## Security Best Practices
 
 ### Input Validation
@@ -389,6 +411,24 @@ linters catch real bugs and style violations that will be flagged in CI or code 
 
 After steps 1–2, always run `git diff` to review auto-applied changes before staging them.
 All four steps must complete with zero errors before the commit is created.
+
+#### Platform-specific files (`_unix.go`, `_windows.go`, `_darwin.go`)
+
+If you add or modify a file with a platform-specific suffix, also cross-compile to catch
+issues the local OS linter skips. On Windows, run:
+
+```powershell
+$env:GOOS = "linux"; go build ./...
+```
+
+On Linux/macOS, run:
+
+```bash
+GOOS=windows go build ./...
+```
+
+This catches import mismatches, missing symbols, and linter rules (like `modernize`
+`strings.SplitSeq`) that only apply on the non-host platform.
 
 #### Common golangci-lint violations to fix proactively
 
