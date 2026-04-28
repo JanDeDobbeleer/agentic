@@ -435,11 +435,11 @@ This catches import mismatches, missing symbols, and linter rules (like `moderni
 These rules frequently fire on new code and are quick to resolve before linting:
 
 | Linter | Trigger | Fix |
-|--------|---------|-----|
+| ------ | ------- | --- |
 | `goconst` | Same string literal appears 3+ times | Extract to a named `const` |
 | `gofmt` | Incorrect indentation or comment spacing | Run `gofmt -w .` — it fixes automatically |
-| `dupl` | Two functions/test cases with near-identical structure | Add `//nolint:dupl` with a brief explanation (e.g. `//nolint:dupl // identical table-driven structure is intentional`) |
-| `modernize` | `strings.Split` used in a `for range` (Go 1.24+) | Run `modernize --fix "./..."` — it fixes automatically |
+| `dupl` | Two functions/test cases with near-identical structure | Add `//nolint:dupl` with a brief reason comment |
+| `modernize` | `strings.Split` used in a `for range` (Go 1.24+) | Run `modernize --fix "./..."` — auto-fixes |
 
 ## Common Pitfalls to Avoid
 
