@@ -11,9 +11,9 @@ jobs:
     runs-on: ubuntu-slim
     steps:
     - name: Checkout code
-      uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98
+      uses: actions/checkout@900f2210b1d28bbbd0bd22d17926b9e224e8f231
     - name: Lint files
-      uses: DavidAnson/markdownlint-cli2-action@07035fd053f7be764496c0f8d8f9f41f98305101
+      uses: DavidAnson/markdownlint-cli2-action@6b51ade7a9e4a75a7ad929842dd298a3804ebe8b
       with:
           config: .markdownlint-cli2.yaml
           globs: '**/*.md'
