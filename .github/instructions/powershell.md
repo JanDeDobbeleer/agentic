@@ -2,6 +2,8 @@
 applyTo: "**/*.ps1, **/*.psm1, **/*.psd1"
 ---
 
+# PowerShell
+
 Refer to `skills/powershell/SKILL.md` for the full PowerShell coding standards.
 
 Key rules to always apply:

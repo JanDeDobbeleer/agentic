@@ -2,6 +2,8 @@
 applyTo: "**/*.md, **/*.mdx"
 ---
 
+# Markdown
+
 Refer to `skills/markdown/SKILL.md` for the full Markdown formatting standards.
 
 Key rules to always apply:
