@@ -1,0 +1,86 @@
+{
+  "skill_name": "svn-to-git-migration",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Hey, we're finally moving our old SVN repo off the company server. The URL is https://svn.internal.corp/repos/billing — it uses the standard trunk/branches/tags layout. We have about 8 years of history and 12 different committers. I want to end up with a proper git repo with all the history, branches, and tags intact. We're on Windows. How do I do this?",
+      "expected_output": "Skill activates. Guides user to detect, then through: stdlayout selection, authors file creation (with template), metadata/tag/branch-name decisions. Generates the exact pwsh migrate.ps1 run command with --stdlayout --authors-file flags. Covers verification steps and push-to-remote next steps.",
+      "assertions": [
+        {
+          "name": "detects_windows_platform",
+          "check": "Response references migrate.ps1 or PowerShell (not migrate.sh or bash) as the script to use"
+        },
+        {
+          "name": "runs_detect_first",
+          "check": "Response instructs user to run the detect subcommand before the full migration"
+        },
+        {
+          "name": "stdlayout_flag_present",
+          "check": "Generated command includes --stdlayout flag"
+        },
+        {
+          "name": "authors_file_guidance",
+          "check": "Response explains the authors file format (user = Name <email>) and offers to generate a stub from the detect output"
+        },
+        {
+          "name": "verification_steps_included",
+          "check": "Response includes verification commands (git log, git branch, git tag) after migration"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "I'm on a Mac and need to migrate an SVN repo to git. The SVN URL is svn+ssh://dev@oldserver.example.com/home/svn/myapp. The repo doesn't have standard trunk/branches/tags — it's all just flat in the root (our old team didn't bother with branching). Also I don't want to keep those git-svn-id lines in the commit messages — this will be a public GitHub repo and they look ugly.",
+      "expected_output": "Skill activates. Detects macOS → migrate.sh. Warns about bash 4 requirement (brew install bash). Detects single-path layout (no --stdlayout flag). Includes --no-metadata flag in the generated command. Addresses svn+ssh URL format (notes auth may prompt). Shows clean final command.",
+      "assertions": [
+        {
+          "name": "detects_macos_platform",
+          "check": "Response references migrate.sh or bash (not migrate.ps1 or PowerShell) as the primary script"
+        },
+        {
+          "name": "bash4_warning",
+          "check": "Response warns about macOS bash 3.2 and mentions brew install bash"
+        },
+        {
+          "name": "no_stdlayout_flag",
+          "check": "Generated command does NOT include --stdlayout since this is a flat repo"
+        },
+        {
+          "name": "no_metadata_flag",
+          "check": "Generated command includes --no-metadata flag"
+        },
+        {
+          "name": "svnssh_auth_noted",
+          "check": "Response mentions that svn+ssh may require authentication or key setup"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "We have a huge SVN monorepo at https://svn.company.com/repos/platform with probably 50,000+ revisions. We use trunk/branches/tags. About 30 committers over 15 years. I've already got an authors.txt file ready. I only want to migrate the /platform/services subdirectory, not the whole repo, and I want to exclude the vendor/ directory (it has huge binaries). What's the best approach?",
+      "expected_output": "Skill activates. Guides through: sub-path migration (URL is https://svn.company.com/repos/platform/services), authors-file usage, --ignore-paths 'vendor/' to exclude vendor dir, large-repo warning (50K revisions = slow, maybe run overnight), and notes the path-filter regex is ref-root-relative (not repo-root-relative like git-svn).",
+      "assertions": [
+        {
+          "name": "subpath_url_guidance",
+          "check": "Response explains the SVN URL should point to the services subdirectory, not the repo root"
+        },
+        {
+          "name": "ignore_paths_flag",
+          "check": "Generated command includes --ignore-paths with a pattern to exclude vendor/"
+        },
+        {
+          "name": "authors_file_flag",
+          "check": "Generated command includes --authors-file flag"
+        },
+        {
+          "name": "large_repo_warning",
+          "check": "Response warns that 50K+ revisions will take significant time"
+        },
+        {
+          "name": "path_filter_base_noted",
+          "check": "Response notes that ignore-paths patterns are matched against ref-root-relative paths (different from git-svn)"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+# SVN-to-Git authors mapping file
+# Format: svn-username = Full Name <email@example.com>
+# 
+# Add one line per SVN committer. Run 'detect' to get the list of authors.
+# Lines starting with # are comments.
+#
+# Special case for commits with no SVN author property:
+# (no author) = Unknown Committer <unknown@example.com>
+#
+# Examples:
+jsmith = Jane Smith <jane.smith@example.com>
+bwilliams = Bob Williams <bob@example.com>
+(no author) = Unknown Committer <unknown@example.com>
