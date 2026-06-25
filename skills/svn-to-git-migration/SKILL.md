@@ -69,6 +69,20 @@ Share the output here so we can review it together before deciding on options.
 
 ---
 
+## Step 1.5 — Execution Policy Check (Windows only)
+
+Before generating the `run` or `phase` command, check whether PowerShell's execution policy
+will block the script:
+
+```powershell
+Get-ExecutionPolicy -List
+```
+
+Paste the output here. If `MachinePolicy` or `UserPolicy` shows `Restricted` or
+`AllSigned`, you are in **snippet mode** — see the section below.
+
+---
+
 ## Step 2 — Interview: migration options
 
 Work through these decisions **in order** based on what `detect` reported.
@@ -265,3 +279,84 @@ git filter-repo --message-callback 'return re.sub(rb"\ngit-svn-id:.*", b"", mess
 - `references/algorithm.md` — technical algorithm spec (for debugging/understanding the scripts)
 - `references/git-svn-mapping.md` — mapping from original git-svn CLI switches to this skill's options
 - `references/troubleshooting.md` — auth issues, encoding, large repos, edge cases
+
+---
+
+## Snippet Mode (Execution Policy Blocked)
+
+Use this flow when `Get-ExecutionPolicy -List` shows `MachinePolicy` or `UserPolicy` set to
+`Restricted` or `AllSigned`. These Group Policy–enforced settings **cannot** be bypassed with
+`-ExecutionPolicy Bypass` on the command line — but an **interactive PowerShell session** is
+never subject to ExecutionPolicy. Pasting code into the REPL is the cleanest workaround.
+
+### How snippet mode works
+
+1. **Phase 0** copies `migrate.ps1` and `_migrate.core.ps1` into `$Target\.svn2git\` — a data
+   directory you control and that doesn't need to be on PATH or subject to signing policy.
+2. Each subsequent phase is run via `powershell -ExecutionPolicy Bypass -File ...` **from the
+   state directory**, bypassing script-file policy (only GPO-set policies can't be bypassed;
+   `-ExecutionPolicy Bypass` still works when the policy is set by the user or locally).
+3. If even `-ExecutionPolicy Bypass` is blocked, paste the snippet directly into an interactive
+   `powershell.exe` or `pwsh.exe` window — interactive input is **never** evaluated as a script
+   file and is therefore never subject to ExecutionPolicy.
+
+### Phase 0 snippet — run once, sets everything up
+
+Replace the placeholder values with your actual paths and options, then paste into an
+interactive PowerShell window:
+
+```powershell
+# Phase 0 — Preflight + config write
+# Paste into an interactive powershell.exe or pwsh.exe window (bypasses ExecutionPolicy)
+$SkillDir = 'C:\path\to\skill\svn-to-git-migration'   # replace with actual skill directory
+$Target   = 'C:\path\to\output\myrepo-git'             # replace with desired output path
+$SvnUrl   = 'https://svn.example.com/repos/myrepo'     # replace with your SVN URL
+
+. "$SkillDir\scripts\_migrate.core.ps1"
+# Adjust flags below to match your interview answers:
+& "$SkillDir\scripts\migrate.ps1" phase -Phase 0 `
+    -SvnUrl $SvnUrl `
+    -Target $Target `
+    -StdLayout `
+    -AuthorsFile "$SkillDir\authors.txt"
+    # Add: -Encoding windows-1252, -Revision 1:5000, -NoMetadata, etc. as needed
+```
+
+After Phase 0 completes, `migrate.ps1` and `_migrate.core.ps1` are copied to
+`$Target\.svn2git\`. All subsequent phases use those copies.
+
+### Phases 1–8 snippets
+
+For each subsequent phase, paste this pattern (changing only the phase number):
+
+```powershell
+# Phase N — replace N with 1, 2, 3 … 8
+$Target = 'C:\path\to\output\myrepo-git'   # same value as Phase 0
+powershell -ExecutionPolicy Bypass -File "$Target\.svn2git\migrate.ps1" phase -Phase N -Target $Target
+```
+
+If `-ExecutionPolicy Bypass` is also blocked by GPO, paste directly into the interactive window:
+
+```powershell
+$Target = 'C:\path\to\output\myrepo-git'
+. "$Target\.svn2git\_migrate.core.ps1"
+# (re-initialise script-scope state that dot-sourcing doesn't carry over between sessions)
+$Script:ShaIndex = [System.Collections.Generic.Dictionary[string,
+    System.Collections.Generic.SortedDictionary[int,string]]]::new()
+$Script:Stats = New-StatsObject
+Import-MigrationState -StateDir "$Target\.svn2git"
+# Then call the phase function directly — example for phase 4–6:
+# Invoke-ConvertRef ...   (refer to _migrate.core.ps1 for function signatures)
+```
+
+### Phase reference
+
+| Phase | Name | What it does |
+|-------|------|--------------|
+| 0 | Preflight + config | Checks SVN reachability, writes `config.json`, copies scripts |
+| 1 | Git init | Creates the bare git repository in `$Target` |
+| 2 | Author map | Loads and validates the authors file |
+| 3 | Resolve refs | Enumerates SVN branches and tags, writes `refs.json` |
+| 4–6 | Convert revisions | Replays SVN revisions as git commits (trunk → branches → tags) |
+| 7 | Post-processing | svn:ignore → .gitignore, set HEAD, run `git gc` |
+| 8 | Summary | Prints the migration report |

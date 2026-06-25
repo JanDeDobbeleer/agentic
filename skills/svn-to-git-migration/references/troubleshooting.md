@@ -299,3 +299,50 @@ svn info <your-url>
 Use the value from `Repository Root:` as your `<svn-url>` argument. This is the URL
 the SVN server considers authoritative, and all `copyfrom` paths in the repository
 are relative to it.
+
+---
+
+## 11. ExecutionPolicy blocks script execution
+
+**Symptom:**
+```
+File migrate.ps1 cannot be loaded because running scripts is disabled on this system.
+```
+or
+```
+migrate.ps1 is not digitally signed.
+```
+
+**Root cause:** Windows Group Policy can set `MachinePolicy` or `UserPolicy` to
+`Restricted` or `AllSigned`. These policy-enforced settings **cannot be overridden**
+with `-ExecutionPolicy Bypass` on the command line — that flag only overrides
+user-level (`CurrentUser`) and machine-level (`LocalMachine`) preferences, not
+GPO-enforced policies.
+
+**Resolution — use Snippet Mode (recommended):**
+
+See the **"Snippet Mode (Execution Policy Blocked)"** section in `SKILL.md` for the
+full guided flow. In short: paste each phase as a code block into an interactive
+`powershell.exe` or `pwsh.exe` window. Interactive input is evaluated by the REPL,
+not as a script file, and is therefore **never** subject to ExecutionPolicy — even
+under the strictest GPO.
+
+**Workaround — paste into interactive PowerShell:**
+
+```powershell
+# Open powershell.exe or pwsh.exe interactively, then paste:
+$SkillDir = 'C:\path\to\skill\svn-to-git-migration'
+. "$SkillDir\scripts\_migrate.core.ps1"
+# ... then call functions directly or use the phase subcommand
+```
+
+**Check your current policy levels:**
+```powershell
+Get-ExecutionPolicy -List
+# MachinePolicy / UserPolicy set by GPO → cannot be bypassed
+# Process / CurrentUser / LocalMachine set by admin/user → can be bypassed
+```
+
+**Why -ExecutionPolicy Bypass sometimes still works:** If only `LocalMachine` is set
+to `Restricted` (not a GPO-enforced policy), `-ExecutionPolicy Bypass` overrides it
+successfully. The block only applies when the *Policy* columns show a restrictive value.
