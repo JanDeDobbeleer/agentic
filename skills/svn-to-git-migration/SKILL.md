@@ -1,16 +1,33 @@
 ---
 name: svn-to-git-migration
 description: >
-  Guide users through migrating a Subversion (SVN) repository to a standalone Git
-  repository, then execute the migration using platform-native scripts. Use this skill
-  whenever the user mentions SVN migration, converting SVN to Git, "we're moving away
-  from SVN", "git svn is missing", "git-svn not found on Windows", or wants to import
-  SVN history into a Git repo — even if they don't use the word "migrate". Also use
-  when someone asks how to preserve SVN history in Git, convert branches/tags from SVN,
-  or set up a Git mirror of an SVN repo.
+  Migrate a Subversion (SVN) repository to a standalone Git repository by running the
+  migration directly using inline PowerShell (on Windows) or bash (on macOS/Linux).
+  The agent executes all commands itself — detection, each migration phase, and
+  verification — using the powershell tool with inline code (never pointing to a .ps1
+  file, which is blocked by Group Policy). Use this skill whenever the user mentions
+  SVN migration, converting SVN to Git, "we're moving away from SVN", "git svn is
+  missing", "git-svn not found on Windows", or wants to import SVN history into a Git
+  repo. Also use when someone asks how to preserve SVN history in Git, convert
+  branches/tags from SVN, or set up a Git mirror of an SVN repo.
 ---
 
 # SVN → Git Migration
+
+> **Agent instructions — read this before every action:**
+>
+> You ORCHESTRATE the migration. Every phase runs as a background subagent via the `task` tool — you never run `powershell` phase snippets yourself. Your context is for orchestration only.
+>
+> **Windows execution model (critical — applies inside every subagent):**
+> - `powershell -File script.ps1` → **ALWAYS BLOCKED** by Group Policy. Never use this.
+> - `powershell -Command "..."` → **Never blocked**. Always use this.
+> - Inline technique: read `lib/core.pslib` as text, wrap in `[scriptblock]::Create()`, dot-source it — no `-File`, no ExecutionPolicy issue.
+>
+> **For every Windows phase:** Tell a `task` subagent the runbook path (e.g. `phases/phase-0.md`) and the placeholder values. The subagent reads the file, fills in values, and executes the snippet. **The orchestrator never opens a runbook file.**
+>
+> **macOS / Linux:** Use `bash scripts/migrate.sh run <url> ...` — no policy constraint. Run it via the bash tool (or delegate to a subagent).
+>
+> **State between phases:** Each phase saves its output to `$target\.svn2git\*.json`. The next phase reads it. This is how cross-phase state (sha-index, refs, config) survives across separate `powershell -Command` invocations.
 
 `git-svn` is no longer bundled with Git for Windows (and macOS Homebrew dropped it
 too). This skill recreates the full `git svn clone` behaviour using only the `svn` CLI
@@ -18,8 +35,8 @@ and standard git plumbing commands (`hash-object`, `write-tree`, `commit-tree`,
 `update-ref`, `update-index`). No Perl, no native extensions required.
 
 **Platform support:**
-- **Windows** — PowerShell 7+ via `scripts/migrate.ps1`
-- **macOS / Linux** — bash via `scripts/migrate.sh`
+- **Windows** — agent runs each phase inline via `powershell -Command`; state persisted as JSON between phases
+- **macOS / Linux** — agent runs `migrate.sh run` directly via bash
 
 > ⚠️ **macOS users:** The system bash is version 3.2 and will not work. Install bash ≥ 4
 > first: `brew install bash`. The script checks at startup and aborts with instructions
@@ -43,49 +60,28 @@ bash --version         # must be 4.0 or later
 # If not: brew install bash
 ```
 
-**Script locations (relative to the skill directory):**
+**Files (relative to the skill directory):**
 - macOS / Linux: `scripts/migrate.sh`
-- Windows: `scripts/migrate.ps1`
+- Windows: `lib/core.pslib` — function library loaded inline by the phase runbooks (never run directly)
 
 ---
 
-## Step 1 — Detect (run this first)
+## Step 1 — Detect
 
-Run the `detect` subcommand against your SVN URL. It performs a preflight check:
-confirms reachability, detects repository layout, enumerates authors, and estimates
-the number of revisions to process.
-
-**macOS / Linux:**
-```bash
-bash scripts/migrate.sh detect <svn-url>
-```
-
-**Windows:**
-```powershell
-pwsh scripts/migrate.ps1 detect <svn-url>
-```
-
-Share the output here so we can review it together before deciding on options.
-
----
-
-## Step 1.5 — Execution Policy Check (Windows only)
-
-Before generating the `run` or `phase` command, check whether PowerShell's execution policy
-will block the script:
-
-```powershell
-Get-ExecutionPolicy -List
-```
-
-Paste the output here. If `MachinePolicy` or `UserPolicy` shows `Restricted` or
-`AllSigned`, you are in **snippet mode** — see the section below.
+> **Agent:** Delegate detect to a `task` subagent — pass the skill directory path and the current working directory. The subagent reads `phases/detect.md`, runs the detection commands, and returns the structured result: SVN URL, layout, authors, head revision.
+>
+> Once the subagent returns, **immediately present the interview questions from Step 2 to the user in a single message** — do not wait for a follow-up prompt. Include in that message:
+> - A summary of what detect found (URL, layout, author count, head revision)
+> - All interview questions that are not already answered by the detect output
+> - A pre-filled suggestion for each question where detect gave enough information
+>
+> Only ask the user for the URL if the subagent reports it could not be auto-detected.
 
 ---
 
 ## Step 2 — Interview: migration options
 
-Work through these decisions **in order** based on what `detect` reported.
+Work through these decisions **in order** based on what the `svn info` / `svn log` output showed.
 
 ### a. Repository layout
 
@@ -171,12 +167,15 @@ What should the trunk become in git?
 
 ### g. svn:ignore → .gitignore conversion
 
-The `--create-ignore` option (on by default) reads `svn:ignore` properties from the
-SVN repository and writes `.gitignore` files into the git repository, then creates a
-final commit on each ref. Recommended: keep the default.
+The skill reads `svn:ignore` properties from the SVN repository and writes `.gitignore` files into the git repository, then creates a final commit on each ref. Recommended: keep the default (enabled).
 
-To disable: `--no-create-ignore` _(note: the default flag name is `--create-ignore`;
-pass it explicitly or omit to accept the default)._
+**Variable to set in Phase 0:** `$noCreateIgnore`
+| User wants | Set `$noCreateIgnore` to |
+|-----------|--------------------------|
+| Create `.gitignore` files (default) | `$false` |
+| Skip `.gitignore` creation | `$true` |
+
+> ⚠️ The variable is **negated** — `$false` = enabled, `$true` = disabled. Do not confuse with a `$createIgnore` flag.
 
 ### h. Target directory
 
@@ -197,12 +196,18 @@ re-running with a later range. See `references/troubleshooting.md` for guidance.
 
 ---
 
-## Step 3 — Generate the command
+## Step 3 — Run the phases
 
-Based on your answers, here is the command to run. Example for a standard-layout
-repository with an authors file:
+> **Agent:** For each phase, launch a `task` subagent with the runbook path and placeholder values — **do not open the runbook file yourself**. The subagent reads it, fills in placeholders, and runs the snippet.
 
-**macOS / Linux:**
+Windows runs the migration as **individual phases** — this works regardless of ExecutionPolicy, gives visibility into progress, and allows resuming if interrupted. macOS/Linux uses a single `run` command (no ExecutionPolicy constraint there).
+
+---
+
+### macOS / Linux
+
+One command does everything:
+
 ```bash
 bash scripts/migrate.sh run https://svn.example.com/repos/myproject \
   --stdlayout \
@@ -211,27 +216,79 @@ bash scripts/migrate.sh run https://svn.example.com/repos/myproject \
   --target ./myproject-git
 ```
 
-**Windows:**
-```powershell
-pwsh scripts/migrate.ps1 run https://svn.example.com/repos/myproject `
-  --stdlayout `
-  --authors-file authors.txt `
-  --default-branch main `
-  --target ./myproject-git
-```
+> Tell me your answers to the interview questions and I'll produce the exact command.
 
-Tell me your answers to the interview questions and I'll produce the exact command for
-your repository.
+---
+
+### Windows — Phase-by-phase (always use this)
+
+For each phase, launch a `task` subagent with the runbook path and the three placeholder values. Phases 1–8 all use the **same runbook** (`phases/run-phase.md`) — only `$phase` changes.
+
+| Phase | Runbook file | Name | What it does |
+|-------|-------------|------|--------------|
+| — | [`phases/detect.md`](phases/detect.md) | Detect | Gather SVN repo info before the interview |
+| 0 | [`phases/phase-0.md`](phases/phase-0.md) | Preflight + config | SVN reachability, writes `config.json`, copies `lib/core.pslib` to state dir |
+| 1 ⟳ | [`phases/run-phase.md`](phases/run-phase.md) — `$phase='1'` | Git init | Creates the git repository — **parallel with 2 & 3** |
+| 2 ⟳ | [`phases/run-phase.md`](phases/run-phase.md) — `$phase='2'` | Author map | Validates the authors file — **parallel with 1 & 3** |
+| 3 ⟳ | [`phases/run-phase.md`](phases/run-phase.md) — `$phase='3'` | Resolve refs | Enumerates SVN branches/tags, writes `refs.json` — **parallel with 1 & 2** |
+| 4 | [`phases/run-phase.md`](phases/run-phase.md) — `$phase='4'` | Convert trunk | Replays trunk revisions as git commits _(long-running)_ |
+| 5 | [`phases/run-phase.md`](phases/run-phase.md) — `$phase='5'` | Convert branches | Replays branch revisions _(may be long)_ |
+| 6 | [`phases/run-phase.md`](phases/run-phase.md) — `$phase='6'` | Convert tags | Creates annotated git tags or dirty-tag branches |
+| 7 | [`phases/run-phase.md`](phases/run-phase.md) — `$phase='7'` | Post-processing | `svn:ignore` → `.gitignore`, set HEAD, run `git gc` |
+| 8 | [`phases/run-phase.md`](phases/run-phase.md) — `$phase='8'` | Summary | Prints the migration report |
+
+⟳ = phases 1, 2, 3 can run in parallel — launch all three simultaneously, wait for all three before Phase 4.
+
+If a phase fails, fix the problem and re-run that phase — earlier phases don't need to be repeated. The SHA index and state are preserved in `$target\.svn2git\`.
+
 
 ---
 
 ## Step 4 — Execute
 
-Run the command. For large repositories this may take a while — the script prints
-progress as it processes each SVN revision.
+> **Agent — orchestration model (critical):**
+>
+> **Every phase runs as a background subagent** via the `task` tool (`agent_type: "task"`, `mode: "background"`). You are the orchestrator — you read runbooks, fill in placeholders, launch subagents, read results, and report progress to the user. You never run `powershell` tool calls yourself for phase execution.
+>
+> **Why:** Keeps your context small. Phase output (potentially hundreds of lines of SVN progress) goes into subagent context, not yours. You only see the summary returned by the subagent.
+>
+> **How to launch a phase as a subagent:**
+> 1. **Phase 0:** `task(prompt="Read phases/phase-0.md in skill dir <skillDir>. Fill in all interview values. Run the PowerShell snippet.")`
+> 2. **Phases 1–8:** `task(prompt="Read phases/run-phase.md in skill dir <skillDir>. Set $skillDir='<skillDir>', $stateDir='<stateDir>', $phase='<N>'. Run the PowerShell snippet.")`
+>
+> Only 3 substitutions for phases 1–8: `$skillDir` (constant), `$stateDir` (from Phase 0), `$phase` (the number). No assembling 30-line templates.
+>
+> **Model selection for phase subagents:** Phases 1–8 are mechanical — the subagent reads a runbook and runs a fixed PowerShell snippet. Heavy reasoning is not needed. Always use the lightest model available in the user's setup:
+> - Claude Haiku if available (`claude-haiku-4.5`)
+> - GPT-4.1 mini / GPT-4o mini as an alternative
+> - Fall back to the user's default only if no lightweight model is configured
+>
+> Pass `model: "claude-haiku-4.5"` (or equivalent) on every `task()` call for phases 1–8. Phase 0 and the Detect step may use the default model as they require light reasoning to fill placeholders.
+>
+> The subagent reads the runbook, fills placeholders, and executes — the orchestrator never reads runbook content itself.
+>
+> **Runbook access:** The subagent reads its own runbook — the orchestrator only passes the skill directory path and the placeholder values gathered from the interview. The orchestrator never reads runbook content.
+>
+> **Always pass absolute paths:** Subagents run in an unknown working directory. Always resolve `$target` and `$authorsFile` to absolute paths before passing them — use the CWD reported by the detect subagent as the base for any relative path the user provided.
 
-If you see errors or unexpected output, share it here and we'll diagnose together. The
-most common issues are covered in `references/troubleshooting.md`.
+**Execution order:**
+
+| Step | What | How |
+|------|------|-----|
+| Detect | Auto-detect SVN repo | Subagent reads `phases/detect.md` — returns URL, layout, authors, head revision |
+| Phase 0 | Preflight + config | Subagent reads `phases/phase-0.md` — 15+ placeholder values from interview. **Capture `CANONICAL_STATEDIT=` and `CANONICAL_TARGET=` from its output — these are `$stateDir` and `$target` for all subsequent phases.** |
+| Phases 1 + 2 + 3 | Git init, Author map, Resolve refs | **3 subagents in parallel** — each reads `phases/run-phase.md` with `$phase='1'`, `'2'`, `'3'`. Only 3 substitutions: `$skillDir`, `$stateDir`, `$phase`. **Use lightest available model.** |
+| Phase 4 | Convert trunk | Subagent reads `phases/run-phase.md` with `$phase='4'`. **Before launching, tell the user: "Phase 4 is starting — this replays every trunk revision and can take minutes to hours."** Use lightest available model. _(long-running)_ |
+| Phase 5 | Convert branches | Subagent reads `phases/run-phase.md` with `$phase='5'`. Warn if repo has many branches. Use lightest available model. |
+| Phase 6 | Convert tags | Subagent reads `phases/run-phase.md` with `$phase='6'`. Use lightest available model. |
+| Phase 7 | Post-processing | Subagent reads `phases/run-phase.md` with `$phase='7'`. Use lightest available model. |
+| Phase 8 | Summary | Subagent reads `phases/run-phase.md` with `$phase='8'`. Use lightest available model. |
+
+- After each subagent completes, report a one-line status to the user: `✅ Phase N complete — <key result>`
+- If a subagent fails, read the `## On error` table in the runbook, fix the problem, and re-launch that phase's subagent only — earlier phases don't need to repeat (state is preserved in `$target\.svn2git\`)
+- A state guard at the start of phases 4–6 will tell you exactly which prior phase to re-run if state files are missing
+
+The most common issues are covered in `references/troubleshooting.md`.
 
 ---
 
@@ -279,84 +336,3 @@ git filter-repo --message-callback 'return re.sub(rb"\ngit-svn-id:.*", b"", mess
 - `references/algorithm.md` — technical algorithm spec (for debugging/understanding the scripts)
 - `references/git-svn-mapping.md` — mapping from original git-svn CLI switches to this skill's options
 - `references/troubleshooting.md` — auth issues, encoding, large repos, edge cases
-
----
-
-## Snippet Mode (Execution Policy Blocked)
-
-Use this flow when `Get-ExecutionPolicy -List` shows `MachinePolicy` or `UserPolicy` set to
-`Restricted` or `AllSigned`. These Group Policy–enforced settings **cannot** be bypassed with
-`-ExecutionPolicy Bypass` on the command line — but an **interactive PowerShell session** is
-never subject to ExecutionPolicy. Pasting code into the REPL is the cleanest workaround.
-
-### How snippet mode works
-
-1. **Phase 0** copies `migrate.ps1` and `_migrate.core.ps1` into `$Target\.svn2git\` — a data
-   directory you control and that doesn't need to be on PATH or subject to signing policy.
-2. Each subsequent phase is run via `powershell -ExecutionPolicy Bypass -File ...` **from the
-   state directory**, bypassing script-file policy (only GPO-set policies can't be bypassed;
-   `-ExecutionPolicy Bypass` still works when the policy is set by the user or locally).
-3. If even `-ExecutionPolicy Bypass` is blocked, paste the snippet directly into an interactive
-   `powershell.exe` or `pwsh.exe` window — interactive input is **never** evaluated as a script
-   file and is therefore never subject to ExecutionPolicy.
-
-### Phase 0 snippet — run once, sets everything up
-
-Replace the placeholder values with your actual paths and options, then paste into an
-interactive PowerShell window:
-
-```powershell
-# Phase 0 — Preflight + config write
-# Paste into an interactive powershell.exe or pwsh.exe window (bypasses ExecutionPolicy)
-$SkillDir = 'C:\path\to\skill\svn-to-git-migration'   # replace with actual skill directory
-$Target   = 'C:\path\to\output\myrepo-git'             # replace with desired output path
-$SvnUrl   = 'https://svn.example.com/repos/myrepo'     # replace with your SVN URL
-
-. "$SkillDir\scripts\_migrate.core.ps1"
-# Adjust flags below to match your interview answers:
-& "$SkillDir\scripts\migrate.ps1" phase -Phase 0 `
-    -SvnUrl $SvnUrl `
-    -Target $Target `
-    -StdLayout `
-    -AuthorsFile "$SkillDir\authors.txt"
-    # Add: -Encoding windows-1252, -Revision 1:5000, -NoMetadata, etc. as needed
-```
-
-After Phase 0 completes, `migrate.ps1` and `_migrate.core.ps1` are copied to
-`$Target\.svn2git\`. All subsequent phases use those copies.
-
-### Phases 1–8 snippets
-
-For each subsequent phase, paste this pattern (changing only the phase number):
-
-```powershell
-# Phase N — replace N with 1, 2, 3 … 8
-$Target = 'C:\path\to\output\myrepo-git'   # same value as Phase 0
-powershell -ExecutionPolicy Bypass -File "$Target\.svn2git\migrate.ps1" phase -Phase N -Target $Target
-```
-
-If `-ExecutionPolicy Bypass` is also blocked by GPO, paste directly into the interactive window:
-
-```powershell
-$Target = 'C:\path\to\output\myrepo-git'
-. "$Target\.svn2git\_migrate.core.ps1"
-# (re-initialise script-scope state that dot-sourcing doesn't carry over between sessions)
-$Script:ShaIndex = [System.Collections.Generic.Dictionary[string,
-    System.Collections.Generic.SortedDictionary[int,string]]]::new()
-$Script:Stats = New-StatsObject
-Import-MigrationState -StateDir "$Target\.svn2git"
-# Then call the phase function directly — example for phase 4–6:
-# Invoke-ConvertRef ...   (refer to _migrate.core.ps1 for function signatures)
-```
-
-### Phase reference
-
-| Phase | Name | What it does |
-|-------|------|--------------|
-| 0 | Preflight + config | Checks SVN reachability, writes `config.json`, copies scripts |
-| 1 | Git init | Creates the bare git repository in `$Target` |
-| 2 | Author map | Loads and validates the authors file |
-| 3 | Resolve refs | Enumerates SVN branches and tags, writes `refs.json` |
-| 4–6 | Convert revisions | Replays SVN revisions as git commits (trunk → branches → tags) |
-| 7 | Post-processing | svn:ignore → .gitignore, set HEAD, run `git gc` |
-| 8 | Summary | Prints the migration report |

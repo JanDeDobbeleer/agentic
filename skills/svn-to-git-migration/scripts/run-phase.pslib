@@ -1,0 +1,257 @@
+# run-phase.pslib
+# Unified phase runner for phases 1–8.
+# NEVER run directly with -File (Group Policy blocks .ps1; .pslib is intentionally non-executable).
+# Always loaded via dot-source inside powershell -Command:
+#
+#   $stateDir = 'C:\...\target\.svn2git'
+#   $phase    = '4'
+#   . ([scriptblock]::Create([System.IO.File]::ReadAllText('C:\...\scripts\run-phase.pslib')))
+#
+# $stateDir and $phase MUST be set in the calling scope before dot-sourcing.
+
+if (-not $stateDir) { throw '`$stateDir` must be set before loading run-phase.pslib' }
+if (-not $phase)    { throw '`$phase` must be set before loading run-phase.pslib' }
+
+# ── Load core functions from state directory ──────────────────────────────────
+. ([scriptblock]::Create([System.IO.File]::ReadAllText("$stateDir\core.pslib")))
+
+$ErrorActionPreference = 'Stop'
+
+# ── Common state guard (phases 4–6 add extra checks inline) ──────────────────
+$_missing = @()
+if (-not (Test-Path "$stateDir\config.json")) { $_missing += 'config.json  (re-run Phase 0)' }
+if (-not (Test-Path "$stateDir\core.pslib"))  { $_missing += 'core.pslib   (re-run Phase 0)' }
+if ($_missing.Count -gt 0) {
+    throw ("Required state files missing from '$stateDir':`n  " + ($_missing -join "`n  "))
+}
+
+$cfg = Initialize-PhaseContext -StateDir $stateDir
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+switch ($phase) {
+
+    '1' {
+        # ── Phase 1 — Git init ────────────────────────────────────────────────
+        $resolvedTarget = $cfg.Target
+        $defaultBranch  = $cfg.DefaultBranch
+
+        if (Test-Path $resolvedTarget) {
+            if (Test-Path (Join-Path $resolvedTarget '.git')) {
+                Write-Host "Reusing existing git repo at $resolvedTarget"
+            } elseif (Test-Path (Join-Path $resolvedTarget '.svn2git')) {
+                & git init "--initial-branch=$defaultBranch" $resolvedTarget | Out-Null
+                Write-Host "Initialised git repo inside existing migration target at $resolvedTarget"
+            } else {
+                throw "Target '$resolvedTarget' exists and is not a git repo or migration target. Choose a different path or remove it."
+            }
+        } else {
+            & git init "--initial-branch=$defaultBranch" $resolvedTarget | Out-Null
+            Write-Host "Initialised git repo at $resolvedTarget"
+        }
+        & git -C $resolvedTarget config core.autocrlf false | Out-Null
+        Write-Host "Phase 1 complete. Git repo at: $resolvedTarget"
+        Save-MigrationState -StateDir $stateDir
+    }
+
+    '2' {
+        # ── Phase 2 — Author map validation ──────────────────────────────────
+        $authorMap = Import-AuthorMap -FilePath $cfg.AuthorsFile
+        Write-Host "Phase 2 complete. $($authorMap.Count) author entries loaded."
+        Save-MigrationState -StateDir $stateDir
+    }
+
+    '3' {
+        # ── Phase 3 — Resolve refs ────────────────────────────────────────────
+        $repoRoot = (Invoke-SvnXml -SvnArgs @('info', '--xml', $cfg.SvnUrl)).SelectSingleNode('//repository/root').InnerText
+
+        $refs = Resolve-Refs `
+            -SvnUrl         $cfg.SvnUrl `
+            -RepoRoot       $repoRoot `
+            -UseStdLayout:  ([switch][bool]$cfg.StdLayout) `
+            -TrunkPath      $cfg.Trunk `
+            -BranchPaths    @($cfg.Branches) `
+            -TagPaths       @($cfg.Tags) `
+            -DefaultBranch  $cfg.DefaultBranch `
+            -SourceEncoding $cfg.Encoding
+
+        $refs | ConvertTo-Json -Depth 4 | Set-Content "$stateDir\refs.json" -Encoding UTF8
+        Write-Host "Phase 3 complete. $($refs.Count) refs resolved."
+        $refs | ForEach-Object {
+            $kind = if ($_.IsTag) { 'tag' } else { 'branch' }
+            Write-Host "  [$kind] $($_.RefName)  →  $($_.SvnUrl)"
+        }
+        Save-MigrationState -StateDir $stateDir
+    }
+
+    '4' {
+        # ── Phase 4 — Convert trunk ───────────────────────────────────────────
+        if (-not (Test-Path "$stateDir\refs.json")) {
+            throw "refs.json missing from '$stateDir' — re-run Phase 3"
+        }
+
+        $refs      = Import-RefList  -StateDir $stateDir
+        $staging   = New-StagingDir
+        $repoUuid  = $cfg.RepoUuid
+        $revRange  = Parse-RevisionRange -RevRange $cfg.Revision
+        $authorMap = Import-AuthorMap    -FilePath $cfg.AuthorsFile
+
+        $trunkRef     = "refs/heads/$($cfg.DefaultBranch)"
+        $filteredRefs = $refs | Where-Object { -not $_.IsTag -and $_.RefName -eq $trunkRef }
+
+        Write-Host "Phase 4: converting $($filteredRefs.Count) trunk ref(s). This may take a long time."
+        try {
+            foreach ($ref in $filteredRefs) {
+                Invoke-ConvertRef `
+                    -Ref               $ref `
+                    -GitDir            $cfg.Target `
+                    -StagingDir        $staging.StagingDir `
+                    -RepoUuid          $repoUuid `
+                    -RevRange          $revRange `
+                    -AuthorMap         $authorMap `
+                    -IgnorePattern     $cfg.IgnorePaths `
+                    -IncludePattern    $cfg.IncludePaths `
+                    -KeepEmpty:        ([switch][bool]$cfg.NoSkipEmptyCommits) `
+                    -OmitMetadata:     ([switch][bool]$cfg.NoMetadata) `
+                    -AllTagsAsBranches:([switch][bool]$cfg.TagsAsBranches) `
+                    -SourceEncoding    $cfg.Encoding
+            }
+            Write-Host "Phase 4 complete."
+        }
+        finally {
+            if (Test-Path $staging.TempBase) { Remove-Item $staging.TempBase -Recurse -Force -ErrorAction SilentlyContinue }
+            Save-MigrationState -StateDir $stateDir
+        }
+    }
+
+    '5' {
+        # ── Phase 5 — Convert branches ────────────────────────────────────────
+        foreach ($f in @('refs.json','sha-index.json')) {
+            if (-not (Test-Path "$stateDir\$f")) {
+                throw "$f missing from '$stateDir' — re-run Phase $(if ($f -eq 'refs.json') {'3'} else {'4'})"
+            }
+        }
+
+        $refs      = Import-RefList  -StateDir $stateDir
+        $staging   = New-StagingDir
+        $repoUuid  = $cfg.RepoUuid
+        $revRange  = Parse-RevisionRange -RevRange $cfg.Revision
+        $authorMap = Import-AuthorMap    -FilePath $cfg.AuthorsFile
+
+        $trunkRef     = "refs/heads/$($cfg.DefaultBranch)"
+        $filteredRefs = $refs | Where-Object { -not $_.IsTag -and $_.RefName -ne $trunkRef }
+
+        Write-Host "Phase 5: converting $($filteredRefs.Count) branch ref(s)."
+        try {
+            foreach ($ref in $filteredRefs) {
+                Invoke-ConvertRef `
+                    -Ref               $ref `
+                    -GitDir            $cfg.Target `
+                    -StagingDir        $staging.StagingDir `
+                    -RepoUuid          $repoUuid `
+                    -RevRange          $revRange `
+                    -AuthorMap         $authorMap `
+                    -IgnorePattern     $cfg.IgnorePaths `
+                    -IncludePattern    $cfg.IncludePaths `
+                    -KeepEmpty:        ([switch][bool]$cfg.NoSkipEmptyCommits) `
+                    -OmitMetadata:     ([switch][bool]$cfg.NoMetadata) `
+                    -AllTagsAsBranches:([switch][bool]$cfg.TagsAsBranches) `
+                    -SourceEncoding    $cfg.Encoding
+            }
+            Write-Host "Phase 5 complete."
+        }
+        finally {
+            if (Test-Path $staging.TempBase) { Remove-Item $staging.TempBase -Recurse -Force -ErrorAction SilentlyContinue }
+            Save-MigrationState -StateDir $stateDir
+        }
+    }
+
+    '6' {
+        # ── Phase 6 — Convert tags ────────────────────────────────────────────
+        foreach ($f in @('refs.json','sha-index.json')) {
+            if (-not (Test-Path "$stateDir\$f")) {
+                throw "$f missing from '$stateDir' — re-run Phase $(if ($f -eq 'refs.json') {'3'} else {'4 then Phase 5'})"
+            }
+        }
+
+        $refs      = Import-RefList  -StateDir $stateDir
+        $staging   = New-StagingDir
+        $repoUuid  = $cfg.RepoUuid
+        $revRange  = Parse-RevisionRange -RevRange $cfg.Revision
+        $authorMap = Import-AuthorMap    -FilePath $cfg.AuthorsFile
+
+        $filteredRefs = $refs | Where-Object { $_.IsTag -eq $true }
+
+        Write-Host "Phase 6: converting $($filteredRefs.Count) tag ref(s)."
+        try {
+            foreach ($ref in $filteredRefs) {
+                Invoke-ConvertRef `
+                    -Ref               $ref `
+                    -GitDir            $cfg.Target `
+                    -StagingDir        $staging.StagingDir `
+                    -RepoUuid          $repoUuid `
+                    -RevRange          $revRange `
+                    -AuthorMap         $authorMap `
+                    -IgnorePattern     $cfg.IgnorePaths `
+                    -IncludePattern    $cfg.IncludePaths `
+                    -KeepEmpty:        ([switch][bool]$cfg.NoSkipEmptyCommits) `
+                    -OmitMetadata:     ([switch][bool]$cfg.NoMetadata) `
+                    -AllTagsAsBranches:([switch][bool]$cfg.TagsAsBranches) `
+                    -SourceEncoding    $cfg.Encoding
+            }
+            Write-Host "Phase 6 complete."
+        }
+        finally {
+            if (Test-Path $staging.TempBase) { Remove-Item $staging.TempBase -Recurse -Force -ErrorAction SilentlyContinue }
+            Save-MigrationState -StateDir $stateDir
+        }
+    }
+
+    '7' {
+        # ── Phase 7 — Post-processing ─────────────────────────────────────────
+        if (-not (Test-Path "$stateDir\refs.json")) {
+            throw "refs.json missing from '$stateDir' — re-run Phase 3"
+        }
+
+        $refs      = Import-RefList -StateDir $stateDir
+        $staging   = New-StagingDir
+        $repoUuid  = $cfg.RepoUuid
+        $authorMap = Import-AuthorMap -FilePath $cfg.AuthorsFile
+
+        try {
+            # 7.1 — svn:ignore → .gitignore
+            if (-not [bool]$cfg.NoCreateIgnore) {
+                Write-Host "Phase 7.1: Converting svn:ignore properties to .gitignore files..."
+                Invoke-CreateIgnore -Refs $refs -GitDir $cfg.Target `
+                    -StagingDir $staging.StagingDir -RepoUuid $repoUuid `
+                    -AuthorMap $authorMap -SourceEncoding $cfg.Encoding
+            } else {
+                Write-Host "Phase 7.1: Skipped (NoCreateIgnore = true)"
+            }
+
+            # 7.2 — Set HEAD
+            Write-Host "Phase 7.2: Setting HEAD to refs/heads/$($cfg.DefaultBranch)"
+            & git -C $cfg.Target symbolic-ref HEAD "refs/heads/$($cfg.DefaultBranch)" | Out-Null
+
+            # 7.3 — git gc
+            Write-Host "Phase 7.3: Running git gc --aggressive --prune=now (may take a few minutes)..."
+            & git -C $cfg.Target gc --aggressive --prune=now 2>&1 | Out-Null
+
+            Write-Host "Phase 7 complete."
+        }
+        finally {
+            if (Test-Path $staging.TempBase) { Remove-Item $staging.TempBase -Recurse -Force -ErrorAction SilentlyContinue }
+            Save-MigrationState -StateDir $stateDir
+        }
+    }
+
+    '8' {
+        # ── Phase 8 — Summary ─────────────────────────────────────────────────
+        Write-Summary -GitDir $cfg.Target -SvnUrl $cfg.SvnUrl
+        Save-MigrationState -StateDir $stateDir
+    }
+
+    default {
+        throw "Unknown phase '$phase'. Valid values are '1' through '8'. Phase 0 uses phases/phase-0.md directly."
+    }
+}
