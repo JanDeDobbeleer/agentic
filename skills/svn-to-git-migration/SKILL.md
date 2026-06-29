@@ -113,6 +113,12 @@ bwilliams = Bob Williams <bob@example.com>
 The `detect` output lists every SVN author that appears in the log — use that list to
 build your file. Ask me to generate a stub `authors.txt` from that list if you'd like.
 
+> ⚠️ **If the detect output shows `AUTHOR_SCAN_COMPLETE: false`**, the full log scan timed out. Some older committers may be missing from the list. You can get the complete set by running locally:
+> ```powershell
+> svn log --xml -q <svn-url> | Select-String '<author>' | ForEach-Object { ($_ -replace '.*<author>(.*)</author>.*','$1').Trim() } | Sort-Object -Unique
+> ```
+> Any SVN username not in `authors.txt` will default to `username@<repo-uuid>` and will be listed as "Unmapped SVN authors" in the Phase 8 summary.
+
 Pass the file with: `--authors-file authors.txt`
 
 ### c. Metadata trailer

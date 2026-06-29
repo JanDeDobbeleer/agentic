@@ -302,7 +302,43 @@ are relative to it.
 
 ---
 
-## 11. ExecutionPolicy blocks script execution
+## 12. Environment noise — unexpected output from third-party tools
+
+**Symptom:** Lines like the following appear in the migration output, mixed in with `svn`
+or `git` output:
+
+```
+Error initializing node
+```
+```
+BMC BladeLogic Authentication Profile: ...
+```
+
+or other messages from enterprise automation software (Tivoli, CyberArk, endpoint agents,
+DLP tools, etc.).
+
+**Cause:** These tools hook into PowerShell process startup or inject into stdout/stderr
+whenever a child process (such as `git.exe` or `svn.exe`) is launched. They are **not**
+produced by the migration script.
+
+**Impact:** None — these messages do not affect the migration. They can be safely ignored.
+
+**How to tell the difference:** Messages from the migration script are always prefixed with
+a phase marker (`Phase N:`, `──`, `VERIFIED:`, `WARNING:`, `ERROR:`) or are standard `git`
+/ `svn` output. Any other lines are environmental noise.
+
+**Suppression (optional):** If the noise volume makes output hard to read, run the migration
+in a clean PowerShell session without loading your profile:
+
+```powershell
+powershell.exe -NoProfile -Command "..."
+```
+
+`-NoProfile` prevents profile scripts that activate third-party tools from running.
+
+---
+
+
 
 **Symptom:**
 ```

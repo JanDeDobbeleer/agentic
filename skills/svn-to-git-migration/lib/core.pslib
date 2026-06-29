@@ -984,6 +984,22 @@ function Invoke-ConvertRef {
                                         -CopyfromRev $Ref.CopyfromRev
         if ($tagSha) {
             Write-Log "  Clean tag fast path: $($Ref.TagName) → $($tagSha.Substring(0,8))"
+
+            # Idempotency: skip if tag already exists (re-run safety)
+            $existingTagCommit = Invoke-Git -GitDir $GitDir `
+                                            -GitArgs @('rev-list', '-n', '1', "refs/tags/$($Ref.TagName)") `
+                                            -AllowFailure
+            if ($existingTagCommit) {
+                if ($existingTagCommit -eq $tagSha) {
+                    Write-Log "  Tag $($Ref.TagName) already exists at correct commit — skipping."
+                } else {
+                    Write-Log ("  Tag $($Ref.TagName) already exists at a different commit " +
+                        "($($existingTagCommit.Substring(0,8))). Skipping to preserve existing tag.") -Level WARN
+                }
+                $Script:Stats.TotalTags++
+                return
+            }
+
             $entry0 = $sortedEntries[0]
             $aNode  = $entry0.SelectSingleNode('author')
             $svnUser = if ($aNode) { $aNode.InnerText } else { '' }
@@ -1166,20 +1182,35 @@ function Invoke-ConvertRef {
     # ── Update git ref ────────────────────────────────────────────────────
     if ($isCleanTag -and -not $AllTagsAsBranches) {
         # Phase 6: annotated tag via tagger env vars
-        Set-GitAuthorEnv -Name $lastAuthorInfo.Name -Email $lastAuthorInfo.Email `
-                         -Date $lastGitDate
-        try {
-            & git -C $GitDir tag -a -m "SVN tag $($Ref.TagName)" `
-                  --cleanup=verbatim $Ref.TagName $lastCommitSha 2>&1 | Out-Null
-            if ($LASTEXITCODE -ne 0) {
-                Write-Log "  git tag failed for $($Ref.TagName)" -Level WARN
+        # Idempotency: skip if tag already exists (re-run safety)
+        $existingTagCommit = Invoke-Git -GitDir $GitDir `
+                                        -GitArgs @('rev-list', '-n', '1', "refs/tags/$($Ref.TagName)") `
+                                        -AllowFailure
+        if ($existingTagCommit) {
+            if ($existingTagCommit -eq $lastCommitSha) {
+                Write-Log "  Tag $($Ref.TagName) already exists at correct commit — skipping."
+            } else {
+                Write-Log ("  Tag $($Ref.TagName) already exists at a different commit " +
+                    "($($existingTagCommit.Substring(0,8))). Skipping to preserve existing tag.") -Level WARN
             }
+            $Script:Stats.TotalTags++
+            Write-Log "  → tag $($Ref.TagName) (existing)"
+        } else {
+            Set-GitAuthorEnv -Name $lastAuthorInfo.Name -Email $lastAuthorInfo.Email `
+                             -Date $lastGitDate
+            try {
+                & git -C $GitDir tag -a -m "SVN tag $($Ref.TagName)" `
+                      --cleanup=verbatim $Ref.TagName $lastCommitSha 2>&1 | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Log "  git tag failed for $($Ref.TagName)" -Level WARN
+                }
+            }
+            finally {
+                Clear-GitAuthorEnv
+            }
+            $Script:Stats.TotalTags++
+            Write-Log "  → tag $($Ref.TagName) @ $($lastCommitSha.Substring(0,8))"
         }
-        finally {
-            Clear-GitAuthorEnv
-        }
-        $Script:Stats.TotalTags++
-        Write-Log "  → tag $($Ref.TagName) @ $($lastCommitSha.Substring(0,8))"
     }
     else {
         Invoke-Git -GitDir $GitDir `
@@ -1213,6 +1244,20 @@ function Invoke-CreateIgnore {
     Write-Log '── Phase 7.1: Converting svn:ignore → .gitignore'
 
     foreach ($ref in $Refs) {
+        # Skip clean annotated tags — .gitignore commits do not belong on immutable tag points.
+        # A dirty tag is already stored as a branch (refs/heads/tags/...) and IS processed.
+        if ($ref.IsTag) {
+            $dirtyBranchRef = "refs/heads/tags/$($ref.TagName)"
+            $dirtyBranchSha = Invoke-Git -GitDir $GitDir `
+                                         -GitArgs @('rev-parse', '--verify', $dirtyBranchRef) `
+                                         -AllowFailure
+            if (-not $dirtyBranchSha) {
+                Write-Log "  Skipping svn:ignore for clean tag $($ref.TagName) (annotated tags are immutable)"
+                continue
+            }
+            # Dirty tag: fall through — use the branch ref as effectiveRef below
+        }
+
         # Skip refs that produced no commits
         $refSha = Invoke-Git -GitDir $GitDir `
                              -GitArgs @('rev-parse', '--verify', $ref.RefName) `
@@ -1236,6 +1281,15 @@ function Invoke-CreateIgnore {
                                  -GitArgs @('rev-parse', '--verify', $altRef) `
                                  -AllowFailure
             if ($altSha) { $effectiveRef = $altRef }
+        }
+
+        # Resolve the commit SHA (dereferences tag objects to their target commit)
+        $parentCommitSha = Invoke-Git -GitDir $GitDir `
+                                      -GitArgs @('rev-parse', "${effectiveRef}^{commit}") `
+                                      -AllowFailure
+        if (-not $parentCommitSha) {
+            Write-Log "  Cannot resolve commit for $effectiveRef — skipping .gitignore pass." -Level WARN
+            continue
         }
 
         Write-Log "  Processing svn:ignore for $effectiveRef ($($ref.SvnUrl))"
@@ -1330,7 +1384,7 @@ function Invoke-CreateIgnore {
             $oldEAP = $ErrorActionPreference
             $ErrorActionPreference = 'Continue'
             $newCommitSha = $msg |
-                & git -C $GitDir commit-tree $newTreeSha -p $refSha 2>&1
+                & git -C $GitDir commit-tree $newTreeSha -p $parentCommitSha 2>&1
             $ErrorActionPreference = $oldEAP
             if ($LASTEXITCODE -ne 0) {
                 Write-Log "  git commit-tree failed for .gitignore on $effectiveRef" -Level WARN

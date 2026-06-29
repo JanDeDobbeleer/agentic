@@ -38,6 +38,7 @@ $repoUuid = 'UNKNOWN'
 $rootUrl  = $svnUrl
 $layout   = 'unknown'
 $authors  = @()
+$authorScanComplete = $false
 
 if ($svnUrl) {
     $infoXml  = [xml](& svn info --xml $svnUrl 2>&1)
@@ -54,12 +55,14 @@ if ($svnUrl) {
     elseif ($hasTrunk) { $layout = 'trunk-only' }
     else { $layout = 'custom' }
 
-    # Step 4: Sample authors
-    $logXml = [xml](& svn log --xml --limit 500 $svnUrl 2>&1)
+    # Step 4: Discover ALL unique authors (-q = headers only, fast on large repos)
+    # No --limit so every committer is captured, regardless of repo age.
+    $logXml = [xml](& svn log --xml -q $svnUrl 2>&1)
     $authors = $logXml.log.logentry |
         ForEach-Object { $_.author } |
         Where-Object   { $_ -ne $null } |
         Sort-Object -Unique
+    $authorScanComplete = $true
 }
 
 # ── Structured return ─────────────────────────────────────────────────────────
@@ -71,6 +74,7 @@ Write-Host "REPO_UUID        : $repoUuid"
 Write-Host "REPO_ROOT        : $rootUrl"
 Write-Host "LAYOUT           : $layout"
 Write-Host "AUTHOR_COUNT     : $($authors.Count)"
+Write-Host "AUTHOR_SCAN_COMPLETE : $($authorScanComplete.ToString().ToLower())"
 Write-Host "AUTHORS          : $($authors -join ', ')"
 Write-Host "NEEDS_URL        : $(if (-not $svnUrl) { 'true' } else { 'false' })"
 Write-Host "=== END DETECT RESULT ==="
@@ -86,6 +90,7 @@ The orchestrator reads the `=== DETECT RESULT ===` block. Key fields:
 | `NEEDS_URL: false` | URL detected — confirm with the user, then proceed to interview |
 | `LAYOUT: standard` | Repo has `trunk/`, `branches/`, `tags/` — suggest `--stdlayout` in interview |
 | `LAYOUT: custom` | Non-standard paths — orchestrator must ask user to specify them |
+| `AUTHOR_SCAN_COMPLETE` | `true` = all committers discovered; `false` = scan failed (e.g. network timeout) — some authors may be missing |
 | `AUTHORS` | Comma-separated list — orchestrator offers to build `authors.txt` |
 
 ## On error
@@ -95,5 +100,5 @@ The orchestrator reads the `=== DETECT RESULT ===` block. Key fields:
 | `E170001: Authentication required` | Repo needs credentials | Add `--username <u> --password <p>` to every `svn` call |
 | `E200009: URL does not exist` | Wrong URL | Confirm the URL with the user |
 | `Cannot convert value … to type [xml]` | `svn` wrote an error message instead of XML | Check the raw output: `& svn info --xml $svnUrl 2>&1` |
-| Empty authors list | `--limit 500` didn't cover all committers | Increase to `--limit 5000` or omit `--limit` (slow on large repos) |
+| Empty authors list or `AUTHOR_SCAN_COMPLETE: false` | `svn log -q` timed out or failed on a large repo | The full scan failed. Increase bandwidth or run `svn log --xml -q <url>` locally and parse manually: `Select-String '<author>' | ForEach-Object { ($_ -replace '.*<author>(.*)</author>.*','$1').Trim() } \| Sort-Object -Unique` |
 | `svn info` fails on a local repo folder | CWD is a bare SVN repository, not a checkout | Step 1b detects `format`+`db/` and builds `file:///` URL automatically |

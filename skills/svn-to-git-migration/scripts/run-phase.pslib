@@ -57,6 +57,7 @@ switch ($phase) {
     '2' {
         # ── Phase 2 — Author map validation ──────────────────────────────────
         $authorMap = Import-AuthorMap -FilePath $cfg.AuthorsFile
+        Write-Host "VERIFIED: authors-loaded=$($authorMap.Count)"
         Write-Host "Phase 2 complete. $($authorMap.Count) author entries loaded."
         Save-MigrationState -StateDir $stateDir
     }
@@ -76,6 +77,9 @@ switch ($phase) {
             -SourceEncoding $cfg.Encoding
 
         $refs | ConvertTo-Json -Depth 4 | Set-Content "$stateDir\refs.json" -Encoding UTF8
+        $branchCount = ($refs | Where-Object { -not $_.IsTag }).Count
+        $tagCount    = ($refs | Where-Object { $_.IsTag }).Count
+        Write-Host "VERIFIED: refs-written=$($refs.Count) branches=$branchCount tags=$tagCount"
         Write-Host "Phase 3 complete. $($refs.Count) refs resolved."
         $refs | ForEach-Object {
             $kind = if ($_.IsTag) { 'tag' } else { 'branch' }
