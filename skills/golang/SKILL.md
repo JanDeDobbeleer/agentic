@@ -275,7 +275,6 @@ for _, item := range items {
 
 ### Writing Tests
 
-- Use table-driven tests for multiple test cases
 - Name tests descriptively using `TestFunctionNameScenario`
 - Use subtests with `t.Run` for better organization
 - Test both success and error cases
@@ -285,6 +284,37 @@ for _, item := range items {
 - When including a standard library that conflicts with an existing import,
   use the lib(library name) pattern to avoid conflicts.
   Such as: `libtime` for the `time` package.
+
+#### Table-driven tests are the default
+
+One behavior under test = one test function with a table of cases. Never write several
+near-identical test functions that differ only in input data, fixtures, or expected outcome —
+those differences are table fields. A per-case fixture (a different map, config, or mock return)
+is not a reason to split; put the fixture in the table. Shared setup (mocks, caches, `Init`
+calls) runs once before the loop.
+
+When adding cases to an existing test file, extend the existing table instead of adding a new
+test function.
+
+Only split into separate test functions when the flow genuinely differs: a different API under
+test, or a setup/assertion sequence that cannot be expressed as table fields.
+
+```go
+// ✅ CORRECT: fixture and error expectation are table fields
+cases := []struct {
+    Fixture       Palette
+    Case          string
+    Input         Ansi
+    Expected      Ansi
+    ExpectedError bool
+}{
+    {Case: "literal", Fixture: Palette{"a": "#123456"}, Input: "p:a", Expected: "#123456"},
+    {Case: "invalid", Fixture: Palette{"a": "{{ broken"}, Input: "p:a", ExpectedError: true},
+}
+
+// ❌ WRONG: TestResolveLiteral, TestResolveReference, TestResolveInvalid —
+// three functions repeating the same setup with different data
+```
 
 ### Test Helpers
 
