@@ -26,6 +26,13 @@ hardware, credentials), say so explicitly in the report and mark the fix as unve
   why it crashes.
 - State what the change should be, which files it touches, and what it deliberately leaves alone.
 
+## When to escalate
+
+If root cause can't be pinned with confidence, or the fix looks architectural, security-sensitive,
+or irreversible, hand the specific question to the strongest available model instead of guessing —
+see [references/escalate.md](references/escalate.md). Resume ownership of the phase once the
+question is answered.
+
 ## Output of this phase
 
 A short analysis report to the user containing:

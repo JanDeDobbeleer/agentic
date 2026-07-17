@@ -1,7 +1,8 @@
 # Phase 5 — Verify
 
-Verification belongs to the orchestrator and runs on the final, merged state of the change.
-It has two halves: the project's quality gates, and functional proof.
+Verification is never delegated downward and runs on the final, merged state of the change. It
+has two halves: the project's quality gates, and functional proof. Both are the coordinator's own
+work by default.
 
 ## Quality gates
 
@@ -19,6 +20,13 @@ the final report quotes them as evidence, not adjectives.
 
 When the user said they will do the manual validation, state exactly what they should check and
 what the expected result is.
+
+## Escalate on high-stakes results
+
+Running the gates and the functional proof stays with the coordinator. If the result is
+ambiguous, or the change is high-blast-radius (migrations, security, irreversible operations), get
+the strongest available model to judge the evidence before declaring done — see
+[references/escalate.md](references/escalate.md).
 
 ## Documentation
 

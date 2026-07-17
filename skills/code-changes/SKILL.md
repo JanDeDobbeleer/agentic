@@ -18,19 +18,22 @@ enter the phase** — not before, and never skip it because the phase "looks obv
 
 ## Roles
 
-Assign work based on model capability:
+Assign work based on model capability. The coordinator is not the strongest model — it's the one
+that stays resident, owns every phase by default, and knows when it's out of its depth.
 
-| Role         | Capability tier                               | Owns                                      |
-| ------------ | --------------------------------------------- | ----------------------------------------- |
-| Orchestrator | Strongest reasoning model available           | Analysis, plan, supervision, verification |
-| Implementer  | Mid-tier coder; small model for trivial edits | Executing one pinned, self-contained task |
+| Role        | Capability tier                                               | Owns                                                                          |
+| ----------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Coordinator | Capable mid-tier, resident for the whole task                | Analysis, plan, delegation, supervision, verification, delivery — by default |
+| Escalation  | Strongest reasoning model available; invoked only on trigger | The specific judgment call the coordinator flagged, then control returns     |
+| Implementer | Same tier as coordinator, or smaller for trivial edits        | Executing one pinned, self-contained task                                    |
 
 Concrete model names per vendor (Anthropic, OpenAI, Google) and how to run the split in Claude
 Code, GitHub Copilot, Codex, or IDE agents: [references/model-tiers.md](references/model-tiers.md).
 
-When the current agent already runs on an implementer-tier model, skip delegation: plan and
-execute directly, still following every phase. Never delegate to a model more capable than the
-current one.
+When the current agent already runs at implementer tier, there's no separate delegation step for
+standard work: plan and execute directly, still following every phase. Escalate to the strongest
+model only when a trigger fires — see [references/escalate.md](references/escalate.md) — never by
+default and never for a routine judgment call the coordinator is equipped to make itself.
 
 ## The flow
 
@@ -39,13 +42,17 @@ current one.
 2. **Plan** ([references/plan.md](references/plan.md)) — pinned spec, task split, parallel vs
    sequential, workspace per task.
 3. **Delegate** ([references/delegate.md](references/delegate.md)) — match each task to the
-   cheapest capable executor.
+   right executor, coordinator-tier by default.
 4. **Supervise** ([references/supervise.md](references/supervise.md)) — monitor, unblock, and
    critically review implementer output.
 5. **Verify** ([references/verify.md](references/verify.md)) — quality gates plus functional
-   proof, never delegated.
+   proof, never delegated downward.
 6. **Deliver** ([references/deliver.md](references/deliver.md)) — conventional commits and an
    outcome-first report.
+
+Analyze, Supervise, and Verify each carry an escalation checkpoint — see
+[references/escalate.md](references/escalate.md) — for handing one specific judgment call to the
+strongest available model without giving up ownership of the phase.
 
 **Stop gate:** Phase 1 ends with reporting the analysis and proposed approach to the user and
 waiting for a go. Skip the gate only when the user already gave the go in the request itself

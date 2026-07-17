@@ -1,6 +1,6 @@
 # Phase 4 — Supervise
 
-Delegation is not fire-and-forget. The orchestrator tracks delivery and owns the outcome.
+Delegation is not fire-and-forget. The coordinator tracks delivery and owns the outcome.
 
 ## Monitor and unblock
 
@@ -20,6 +20,14 @@ Review every subagent diff as if it were an external PR:
   simpler one — document the override and its reason for the final report.
 - Watch for spec-compliant-but-ugly: a change can satisfy the letter of the spec and still not
   belong in the codebase. Consistency with surrounding code wins.
+
+## Escalate on low confidence
+
+If a diff leaves you unsure whether the fix is correct or merely plausible, or it touches
+security, data-migration, or otherwise irreversible territory, get a second read from the
+strongest available model before signing off — see
+[references/escalate.md](references/escalate.md). Don't rubber-stamp a diff you can't fully
+verify yourself.
 
 ## Trust nothing unverified
 
