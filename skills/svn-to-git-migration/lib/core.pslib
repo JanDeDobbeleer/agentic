@@ -1,6 +1,8 @@
-﻿# _migrate.core.ps1
-# Helper-function library for migrate.ps1.
-# Dot-sourced by migrate.ps1; does NOT execute anything on its own.
+﻿# core.pslib
+# Function library backing the SVN→git migration phase runbooks.
+# Dot-sourced by scripts/run-phase.pslib (itself loaded via
+# [scriptblock]::Create inside an inline `powershell -Command` invocation) —
+# does NOT execute anything on its own.
 # Compatible with Windows PowerShell 5.1+ and PowerShell 7+.
 # ─────────────────────────────────────────────────────────────────────────────
 # LOGGING
@@ -458,24 +460,76 @@ function Resolve-SvnSpecialFilesLocal {
     return $result
 }
 
+function Resolve-SvnSpecialFilesFast {
+    <#
+    svn:special (symlink) detection restricted to a known changed-file set —
+    the O(changed-files) counterpart to Resolve-SvnSpecialFilesLocal. Used by
+    the Invoke-ConvertRef fast path, where the changed paths for this revision
+    are already known from parsing the `svn update`/`checkout` output, so a
+    full recursive working-copy walk is unnecessary.
+    Returns list of [pscustomobject]@{ FileFullPath; RelPath; Target }
+    #>
+    param([string]$WcDir, [string[]]$ChangedPaths)
+
+    $result = [System.Collections.Generic.List[pscustomobject]]::new()
+    if (-not $ChangedPaths) { return $result }
+
+    foreach ($rel in $ChangedPaths) {
+        $full = Join-Path $WcDir ($rel -replace '/', '\')
+        if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
+
+        $fi = Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
+        if (-not $fi -or $fi.Length -gt 1024) { continue }
+
+        try   { $content = [System.IO.File]::ReadAllText($full) }
+        catch { continue }
+        if (-not $content.StartsWith('link ')) { continue }
+
+        # Confirm the svn:special property is actually set (local WC — no network)
+        $propOut = & svn propget svn:special $full 2>&1
+        if ($LASTEXITCODE -ne 0) { continue }
+        $propStr = ($propOut | Out-String).Trim()
+        if (-not $propStr) { continue }
+
+        $target = $content.Substring(5).TrimEnd("`r", "`n")
+        $result.Add([pscustomobject]@{
+            FileFullPath = $full
+            RelPath      = $rel
+            Target       = $target
+        })
+    }
+    return $result
+}
+
 function Stage-Symlinks {
     <#
     For each detected svn:special symlink:
-      1. Remove the placeholder text file from the working tree.
+      1. Remove the placeholder text file from the working tree (unless
+         -KeepPlaceholder — see below).
       2. Hash the target string as a git blob.
       3. Stage it with mode 120000.
     Must be called AFTER git add -A (so the index has the placeholder) and
     BEFORE git write-tree.
+
+    -KeepPlaceholder: used by the fast path, where the "working tree" being
+    indexed is the live SVN working copy itself. Deleting the placeholder
+    file there would make the next `svn update` see a missing file and
+    restore it (or conflict). Instead the 120000 cacheinfo entry is staged
+    on top of the regular entry `git add -A` already staged — the cacheinfo
+    entry wins, and the on-disk placeholder is left untouched for SVN.
     #>
     param(
         [System.Collections.Generic.List[pscustomobject]]$Symlinks,
-        [string]$GitDir
+        [string]$GitDir,
+        [switch]$KeepPlaceholder
     )
     foreach ($sym in $Symlinks) {
-        # Remove placeholder from the git working tree (use RelPath so this always
-        # targets $GitDir, even when the symlink was detected from an SVN WC path)
-        $gitPlaceholder = Join-Path $GitDir ($sym.RelPath -replace '/', '\')
-        Remove-Item $gitPlaceholder -Force -ErrorAction SilentlyContinue
+        if (-not $KeepPlaceholder) {
+            # Remove placeholder from the git working tree (use RelPath so this always
+            # targets $GitDir, even when the symlink was detected from an SVN WC path)
+            $gitPlaceholder = Join-Path $GitDir ($sym.RelPath -replace '/', '\')
+            Remove-Item $gitPlaceholder -Force -ErrorAction SilentlyContinue
+        }
 
         # Symlink blob content is just the target path (not "link <target>")
         $blobSha = ($sym.Target | & git -C $GitDir hash-object -w --stdin 2>&1)
@@ -570,6 +624,61 @@ function Apply-ExecutableBitsLocal {
         & git -C $GitDir update-index --chmod=+x -- $relPath 2>&1 | Out-Null
         if ($LASTEXITCODE -eq 0) {
             Write-Log "  svn:executable → +x $relPath"
+        }
+    }
+}
+
+function Apply-ExecutableBitsFast {
+    <#
+    svn:executable detection restricted to a known changed-file set — the
+    O(changed-files) counterpart to Apply-ExecutableBitsLocal. Queries
+    `svn proplist --xml -v` over just the changed paths (chunked to stay
+    under command-line length limits) instead of a full --depth infinity
+    walk of the whole working copy.
+    Called after git add -A but before git write-tree.
+    #>
+    param([string]$GitDir, [string]$WcDir, [string[]]$ChangedPaths)
+
+    if (-not $ChangedPaths -or @($ChangedPaths).Count -eq 0) { return }
+
+    $wcBase    = $WcDir.TrimEnd('\') + '\'
+    $fullPaths = @($ChangedPaths | ForEach-Object { Join-Path $WcDir ($_ -replace '/', '\') } |
+                    Where-Object { Test-Path -LiteralPath $_ })
+    if ($fullPaths.Count -eq 0) { return }
+
+    $chunkSize = 100
+    for ($i = 0; $i -lt $fullPaths.Count; $i += $chunkSize) {
+        $last  = [Math]::Min($i + $chunkSize - 1, $fullPaths.Count - 1)
+        $chunk = $fullPaths[$i..$last]
+
+        $propOut = & svn proplist --xml -v $chunk 2>&1
+        if ($LASTEXITCODE -ne 0) { continue }   # not fatal — leave bits as-is for this chunk
+
+        try {
+            $propXml = [System.Xml.XmlDocument]::new()
+            $propXml.LoadXml(($propOut | Out-String).Trim())
+        }
+        catch { continue }
+
+        $targets = $propXml.SelectNodes('//target')
+        if (-not $targets) { continue }
+
+        foreach ($tgt in $targets) {
+            $hasExec = $tgt.SelectNodes('property[@name="svn:executable"]').Count -gt 0
+            if (-not $hasExec) { continue }
+
+            $tgtPath = $tgt.GetAttribute('path')
+            $relPath = if ($tgtPath.StartsWith($wcBase, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $tgtPath.Substring($wcBase.Length) -replace '\\', '/'
+            } else {
+                $tgtPath.TrimStart('.').TrimStart('/') -replace '\\', '/'
+            }
+            if (-not $relPath) { continue }
+
+            & git -C $GitDir update-index --chmod=+x -- $relPath 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Log "  svn:executable → +x $relPath"
+            }
         }
     }
 }
@@ -896,10 +1005,132 @@ function Resolve-Refs {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# O(CHANGED-FILES) FAST PATH — operate git directly against the SVN working
+# copy instead of mirroring it into the git worktree first. Only used by
+# Invoke-ConvertRef when neither -IgnorePattern nor -IncludePattern is set.
+# ─────────────────────────────────────────────────────────────────────────────
+
+function Get-ChangedPathsFromSvnOutput {
+    <#
+    Parse the stdout lines of `svn checkout`/`svn update` into a list of
+    working-copy-relative, forward-slash paths that changed in this
+    revision. Returns $null (never an empty-but-valid array in the failure
+    case) if any line could not be classified as either a status line or a
+    known summary line — callers MUST fall back to a full-tree scan for that
+    revision when this happens, since correctness beats speed.
+    #>
+    param([string[]]$Lines, [string]$WcDir)
+
+    $changed = [System.Collections.Generic.List[string]]::new()
+    # ,$changed (not bare $changed): PowerShell unrolls an IEnumerable return
+    # value onto the pipeline, so a bare return of an EMPTY list yields ZERO
+    # pipeline objects — the caller sees $null, indistinguishable from a real
+    # parse failure. The unary comma wraps it as a single pipeline object so
+    # an empty-but-valid result stays a countable (empty) collection.
+    if (-not $Lines) { return ,$changed }
+
+    $wcBase = $WcDir.TrimEnd('\') + '\'
+    $summaryPattern = '^(Updating |Updated to revision|Checked out revision|At revision|' +
+        'Fetching external|External at revision|Summary of conflicts|Skipped |' +
+        'Restored |Resolved conflicted state)'
+
+    foreach ($raw in $Lines) {
+        if ($null -eq $raw) { continue }
+        $line = $raw.ToString().TrimEnd("`r")
+        if ($line.Trim() -eq '') { continue }
+        if ($line -match $summaryPattern) { continue }
+
+        if ($line -match '^\s{0,3}([ADUCGER])([ADUCGER ])?\s+(.+)$') {
+            $p = $Matches[3].Trim()
+            if ($p.StartsWith($wcBase, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $p = $p.Substring($wcBase.Length)
+            }
+            elseif ($p.StartsWith($WcDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $p = $p.Substring($WcDir.Length).TrimStart('\', '/')
+            }
+            $p = $p -replace '\\', '/'
+            if ($p) { $changed.Add($p) }
+            continue
+        }
+
+        # Unrecognized line — signal the caller to fall back to a full scan.
+        return $null
+    }
+
+    # See the comment on the early return above: wrap so an empty-but-valid
+    # result (e.g. input was only summary lines — nothing changed) is not
+    # unrolled into $null and misrouted to the full-scan fallback.
+    return ,$changed
+}
+
+function Add-SvnExclude {
+    <#
+    Append '.svn/' AND '.svn2git/' to <GitDir>\.git\info\exclude (idempotent,
+    checked line-by-line) so neither SVN's metadata directory nor the
+    migration's own state directory is ever staged. Must be called
+    UNCONDITIONALLY (both fast and filtered paths) once per ref, right after
+    checkout — $GitDir physically contains .svn2git\ (config.json,
+    sha-index.json, logs, ...) alongside the git worktree, and a bare
+    `git add -A` against $GitDir (the filtered/fallback path) would otherwise
+    stage and commit it. `.git/info/exclude` applies to `git add` regardless
+    of which --work-tree is in effect, so one call per ref is enough.
+    #>
+    param([string]$GitDir)
+
+    $excludePath = Join-Path $GitDir '.git\info\exclude'
+    $excludeDir  = Split-Path $excludePath -Parent
+    if (-not (Test-Path $excludeDir)) { New-Item -ItemType Directory -Path $excludeDir -Force | Out-Null }
+
+    $existing = @()
+    if (Test-Path $excludePath) { $existing = @(Get-Content $excludePath) }
+    foreach ($pattern in @('.svn/', '.svn2git/')) {
+        if ($existing -notcontains $pattern) {
+            Add-Content -LiteralPath $excludePath -Value $pattern
+            $existing += $pattern
+        }
+    }
+}
+
+function Invoke-GitFastAdd {
+    <#
+    `git add -A` run directly against the SVN working copy via an explicit
+    --git-dir/--work-tree pair, so the git index (which lives under
+    <GitDir>\.git) is updated from files that physically live in $WcDir —
+    no robocopy mirror step required. `-C $WcDir` pins the process's cwd to
+    the work-tree root so "-A" pathspec resolution is unambiguous.
+    #>
+    param([string]$GitDotGit, [string]$WcDir)
+
+    $out = & git "--git-dir=$GitDotGit" "--work-tree=$WcDir" -C $WcDir add -A 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $err = ($out | Out-String).Trim()
+        throw "git add -A (fast path) failed: $err"
+    }
+}
+
+function Invoke-GitGcAuto {
+    <#
+    Best-effort `git gc --auto` — swallows all output/errors since this is
+    purely a housekeeping optimization, never allowed to fail the migration.
+    Gated to phases 4/5 (trunk/branch conversion, where commit volume is
+    highest) per spec; a no-op for any other/absent $Phase.
+    #>
+    param([string]$GitDir, [string]$Phase)
+    if ($Phase -ne '4' -and $Phase -ne '5') { return }
+    & git -C $GitDir gc --auto 2>&1 | Out-Null
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PHASE 4–6 — PER-REF CONVERSION
 # ─────────────────────────────────────────────────────────────────────────────
 
 function Invoke-ConvertRef {
+    <#
+    Returns 'complete' on normal completion (including converted-nothing /
+    already-fully-converted / clean-tag-fast-path exits) or 'checkpoint' if
+    the time budget (-Deadline) was hit mid-ref and the caller should stop
+    the ref loop and re-run this phase later to pick up where it left off.
+    #>
     param(
         [pscustomobject]$Ref,
         [string]        $GitDir,
@@ -912,11 +1143,19 @@ function Invoke-ConvertRef {
         [switch]        $KeepEmpty,
         [switch]        $OmitMetadata,
         [switch]        $AllTagsAsBranches,
-        [string]        $SourceEncoding
+        [string]        $SourceEncoding,
+        [string]        $StateDir = '',
+        [string]        $Phase    = '',
+        [Nullable[datetime]] $Deadline = $null
     )
 
     $refName = $Ref.RefName
     $refUrl  = $Ref.SvnUrl
+
+    # Fast path (O(changed-files)) only applies when there is no path filtering —
+    # the filtered path needs the full robocopy-staging flow to apply the filter.
+    $useFastPath = (-not $IgnorePattern) -and (-not $IncludePattern)
+    $gitDotGit   = Join-Path $GitDir '.git'
 
     Write-Log "── Processing ref: $refName ($refUrl)"
 
@@ -929,13 +1168,13 @@ function Invoke-ConvertRef {
     }
     catch {
         Write-Log "Could not get log for $refUrl`: $_" -Level WARN
-        return
+        return 'complete'
     }
 
     $allEntries = $logXml.SelectNodes('//logentry')
     if ($allEntries.Count -eq 0) {
         Write-Log "  No revisions found for $refUrl. Skipping." -Level WARN
-        return
+        return 'complete'
     }
 
     # Apply --revision filter
@@ -945,7 +1184,7 @@ function Invoke-ConvertRef {
     }
     if (-not $entries -or @($entries).Count -eq 0) {
         Write-Log "  No revisions in range $($RevRange.Start):$($RevRange.End) for $refUrl. Skipping."
-        return
+        return 'complete'
     }
 
     # Force array — Sort-Object returns a scalar for single-item input, which makes
@@ -955,6 +1194,8 @@ function Invoke-ConvertRef {
     $firstRev      = [int]$sortedEntries[0].GetAttribute('revision')
 
     # ── Tag dirty / clean check (Phase 6) ────────────────────────────────
+    # Always computed from the ORIGINAL first revision — resume trimming below
+    # must not change dirty/clean classification or fast-path tag naming.
     $effectiveRefName = $refName
     $isCleanTag       = $false
 
@@ -979,6 +1220,8 @@ function Invoke-ConvertRef {
     # ── Fast path: clean tag whose copyfrom commit is already in the SHA index ──
     # A clean SVN tag is just a copy of another ref at a specific revision.
     # The corresponding git commit already exists from Phase 4/5 — no checkout needed.
+    # (The index lookup here is keyed by the copyfrom ref's URL, not $refUrl —
+    # unrelated to the resume logic below, which is keyed by this ref's own URL.)
     if ($isCleanTag -and $Ref.CopyfromUrl -and $Ref.CopyfromRev) {
         $tagSha = Get-CopyfromParentSha -CopyfromUrl $Ref.CopyfromUrl `
                                         -CopyfromRev $Ref.CopyfromRev
@@ -996,8 +1239,10 @@ function Invoke-ConvertRef {
                     Write-Log ("  Tag $($Ref.TagName) already exists at a different commit " +
                         "($($existingTagCommit.Substring(0,8))). Skipping to preserve existing tag.") -Level WARN
                 }
-                $Script:Stats.TotalTags++
-                return
+                # No-op re-run path — do NOT increment TotalTags (Write-Summary now
+                # derives ref counts live from git, but stats.json should still stay
+                # roughly honest for anything that reads it directly).
+                return 'complete'
             }
 
             $entry0 = $sortedEntries[0]
@@ -1019,7 +1264,7 @@ function Invoke-ConvertRef {
             }
             $Script:Stats.TotalTags++
             Write-Log "  → tag $($Ref.TagName) @ $($tagSha.Substring(0,8)) (fast path, no checkout)"
-            return
+            return 'complete'
         }
         Write-Log ("  Clean tag $($Ref.TagName): copyfrom SHA not in index " +
             "— falling back to full checkout") -Level WARN
@@ -1040,143 +1285,280 @@ function Invoke-ConvertRef {
         }
     }
 
-    $revIdx          = 0
-    $lastCommitSha   = $null
-    $lastAuthorInfo  = $null
-    $lastGitDate     = $null
-
-    # ── 4.1.5 Initialize incremental SVN working copy (once per ref) ─────
-    # svn checkout at the first revision; subsequent revisions use svn update.
-    # This replaces per-revision svn export — network cost drops from O(R×F) to O(F+Δ).
-    Write-Log "  Checking out $refUrl@$firstRev …"
-    try {
-        Initialize-SvnWorkingCopy -Url $refUrl -Rev $firstRev -WcDir $StagingDir
-    }
-    catch {
-        Write-Log ("svn checkout failed for $refUrl@$firstRev. Aborting.`n" +
-            "URL: $refUrl`nRevision: $firstRev`nError: $_") -Level ERROR
-        throw
+    # ── True resume: skip revisions this ref's SHA index already recorded ──
+    # The SHA index is keyed by $refUrl regardless of $effectiveRefName, so
+    # this works the same for plain branches, dirty-tag branches, and tags
+    # converted via the AllTagsAsBranches path.
+    $resumeRev = $null
+    $resumeSha = $null
+    if ($Script:ShaIndex.ContainsKey($refUrl)) {
+        $idxForRef = $Script:ShaIndex[$refUrl]
+        if ($idxForRef.Count -gt 0) {
+            $resumeRev = ($idxForRef.Keys | Measure-Object -Maximum).Maximum
+            $resumeSha = $idxForRef[$resumeRev]
+        }
     }
 
-    foreach ($entry in $sortedEntries) {
-        $revIdx++
-        $rev      = [int]$entry.GetAttribute('revision')
-        $aNode    = $entry.SelectSingleNode('author')
-        $svnUser  = if ($aNode) { $aNode.InnerText } else { '' }
-        $svnDate  = $entry.SelectSingleNode('date').InnerText
-        $msgNode  = $entry.SelectSingleNode('msg')
-        $svnMsg   = if ($msgNode) { $msgNode.InnerText } else { '' }
+    $remainingEntries = $sortedEntries
+    if ($null -ne $resumeRev) {
+        $remainingEntries = @($sortedEntries | Where-Object { [int]$_.GetAttribute('revision') -gt $resumeRev })
+        if ($remainingEntries.Count -ne $sortedEntries.Count) {
+            Write-Log "  Resuming $effectiveRefName after r$resumeRev — $($remainingEntries.Count) revisions remaining"
+        }
+    }
 
-        $authorInfo = Resolve-Author -SvnUsername $svnUser `
-                                     -AuthorMap $AuthorMap `
-                                     -RepoUuid $RepoUuid
-        $gitDate    = Convert-SvnDate -SvnDate $svnDate
+    $revIdx           = 0
+    $lastCommitSha    = $null
+    $lastAuthorInfo   = $null
+    $lastGitDate      = $null
+    $lastConvertedRev = if ($null -ne $resumeRev) { $resumeRev } else { 0 }
+    $commitsThisRef   = 0
 
-        Write-RevProgress -Rev $rev -Total $totalRevs `
-                          -RefName $effectiveRefName `
-                          -Msg $svnMsg -Author $svnUser
+    if ($null -ne $resumeRev -and $remainingEntries.Count -eq 0) {
+        # Every revision for this ref is already in the SHA index — the only
+        # thing that could still be missing is the ref/tag update itself
+        # (e.g. a crash between the last commit-tree and update-ref). Skip
+        # checkout/replay entirely and fall through to ref finalization below.
+        $lastCommitSha = $resumeSha
+        $lastEntry     = $sortedEntries[$sortedEntries.Count - 1]
+        $aNodeLast     = $lastEntry.SelectSingleNode('author')
+        $svnUserLast   = if ($aNodeLast) { $aNodeLast.InnerText } else { '' }
+        $svnDateLast   = $lastEntry.SelectSingleNode('date').InnerText
+        $lastAuthorInfo = Resolve-Author -SvnUsername $svnUserLast -AuthorMap $AuthorMap -RepoUuid $RepoUuid
+        $lastGitDate    = Convert-SvnDate -SvnDate $svnDateLast
+        Write-Log "  $effectiveRefName already fully converted (through r$resumeRev) — only finalizing the ref."
+    }
+    else {
+        if ($null -ne $resumeRev -and $resumeSha) {
+            # Resuming mid-ref: parent for the next commit is the last converted
+            # commit of THIS ref, not the copyfrom parent computed above.
+            $parentSha     = $resumeSha
+            $lastCommitSha = $resumeSha
+        }
 
-        $Script:Stats.SvnRevisions++
+        $sortedEntries = $remainingEntries
+        $totalRevs     = $sortedEntries.Count
+        $checkoutRev   = [int]$sortedEntries[0].GetAttribute('revision')
 
-        # ── 4.2 Update SVN working copy to $rev (incremental delta) ──────
-        # First revision: WC is already at $firstRev from checkout above.
-        # Subsequent revisions: svn update applies only the delta — O(changed files).
+        # ── 4.1.5 Initialize incremental SVN working copy (once per ref) ─────
+        # svn checkout at the first (remaining) revision; subsequent revisions
+        # use svn update. This replaces per-revision svn export — network cost
+        # drops from O(R×F) to O(F+Δ).
+        # Output is captured (not left bare) for two reasons: (1) the checkout
+        # itself prints an `A    <path>` line per file, which the FIRST loop
+        # iteration needs — svn:special/svn:executable on ref creation would
+        # otherwise be missed — see $pendingCheckoutOutput below; and (2) a
+        # bare, uncaptured call here would leak its stdout lines into this
+        # function's own output stream, corrupting the 'complete'/'checkpoint'
+        # return value for the caller.
+        Write-Log "  Checking out $refUrl@$checkoutRev …"
+        $checkoutOutput = $null
         try {
-            Invoke-Svn @('update', '-r', $rev, $StagingDir)
+            $checkoutOutput = Initialize-SvnWorkingCopy -Url $refUrl -Rev $checkoutRev -WcDir $StagingDir
         }
         catch {
-            Write-Log ("svn update failed for $refUrl@$rev. Aborting.`n" +
-                "URL: $refUrl`nRevision: $rev`nError: $_") -Level ERROR
+            Write-Log ("svn checkout failed for $refUrl@$checkoutRev. Aborting.`n" +
+                "URL: $refUrl`nRevision: $checkoutRev`nError: $_") -Level ERROR
             throw
         }
 
-        # ── 4.3 Mirror WC → git working tree (robocopy handles deletes too) ──
-        # Copy-WcToRepo excludes .svn, .git, .svn2git and applies path filters.
-        Copy-WcToRepo -WcDir $StagingDir -GitDir $GitDir `
-                      -IgnorePattern $IgnorePattern `
-                      -IncludePattern $IncludePattern
+        # Unconditional — both the fast path (git add -A run directly against
+        # the SVN WC) and the filtered/fallback path (git add -A run against
+        # $GitDir, which physically contains .svn2git\) need .svn/ and
+        # .svn2git/ excluded from staging.
+        Add-SvnExclude -GitDir $GitDir
 
-        # ── 4.4 Detect svn:special from local WC (no network) ─────────────
-        # Wrap in @() so an empty list becomes an empty array, never $null
-        [object[]]$symlinks = @(Resolve-SvnSpecialFilesLocal -WcDir $StagingDir)
+        # Folded into the FIRST loop iteration's changed-path set, then cleared —
+        # see the fast-path branch inside the loop below.
+        $pendingCheckoutOutput = $checkoutOutput
 
-        # Stage all changes (adds, modifies, deletes — robocopy already mirrored)
-        Invoke-Git -GitDir $GitDir -GitArgs @('add', '-A') | Out-Null
+        foreach ($entry in $sortedEntries) {
 
-        # ── Handle svn:special: remove placeholders, stage as 120000 ──────
-        if ($symlinks.Count -gt 0) {
-            Stage-Symlinks -Symlinks $symlinks -GitDir $GitDir
-        }
-
-        # ── Handle svn:executable from local WC (no network) ───────────────
-        Apply-ExecutableBitsLocal -GitDir $GitDir -WcDir $StagingDir
-
-        # ── 4.6 Write tree + empty commit detection ───────────────────
-        $newTreeSha = Invoke-Git -GitDir $GitDir -GitArgs @('write-tree')
-
-        $headTreeSha = Invoke-Git -GitDir $GitDir `
-                                  -GitArgs @('rev-parse', 'HEAD^{tree}') `
-                                  -AllowFailure
-
-        $isEmptyCommit = ($newTreeSha -eq $headTreeSha)
-        if ($isEmptyCommit -and -not $KeepEmpty) {
-            Write-Log "  Rev ${rev}: empty tree (same as HEAD). Skipping."
-            $Script:Stats.SkippedEmpty++
-            # Still index this rev pointing at whatever parentSha is
-            if ($lastCommitSha) {
-                Update-ShaIndex -Url $refUrl -Rev $rev -Sha $lastCommitSha
+            # ── Time budget check (top of loop) ───────────────────────────
+            if ($Deadline -and (Get-Date) -ge $Deadline) {
+                if ($StateDir) { Save-MigrationState -StateDir $StateDir }
+                Write-MigrationProgress -StateDir $StateDir -Phase $Phase -RefName $effectiveRefName `
+                    -Rev $lastConvertedRev -RevIndex $revIdx -RevTotal $totalRevs `
+                    -Commits $Script:Stats.TotalCommits -Status 'checkpoint' `
+                    -Message 'Time budget reached.'
+                Write-Host "CHECKPOINT: phase=$Phase ref=$effectiveRefName rev=$lastConvertedRev"
+                return 'checkpoint'
             }
-            continue
-        }
 
-        # ── 4.7 Author + date env vars ────────────────────────────────
-        Set-GitAuthorEnv -Name $authorInfo.Name -Email $authorInfo.Email `
-                         -Date $gitDate
+            $revIdx++
+            $rev      = [int]$entry.GetAttribute('revision')
+            $aNode    = $entry.SelectSingleNode('author')
+            $svnUser  = if ($aNode) { $aNode.InnerText } else { '' }
+            $svnDate  = $entry.SelectSingleNode('date').InnerText
+            $msgNode  = $entry.SelectSingleNode('msg')
+            $svnMsg   = if ($msgNode) { $msgNode.InnerText } else { '' }
 
-        # ── 4.8 Commit message (+ optional git-svn-id trailer) ────────
-        $commitMsg = $svnMsg
-        if (-not $OmitMetadata) {
-            $commitMsg = $svnMsg.TrimEnd() + "`n`ngit-svn-id: $refUrl@$rev $RepoUuid"
-        }
+            $authorInfo = Resolve-Author -SvnUsername $svnUser `
+                                         -AuthorMap $AuthorMap `
+                                         -RepoUuid $RepoUuid
+            $gitDate    = Convert-SvnDate -SvnDate $svnDate
 
-        # ── 4.9 Create commit object ──────────────────────────────────
-        try {
-            $oldEAP = $ErrorActionPreference
-            $ErrorActionPreference = 'Continue'   # prevent PS from treating git stderr as terminating
-            if ($parentSha) {
-                $commitSha = $commitMsg | & git -C $GitDir commit-tree $newTreeSha -p $parentSha 2>&1
+            Write-RevProgress -Rev $rev -Total $totalRevs `
+                              -RefName $effectiveRefName `
+                              -Msg $svnMsg -Author $svnUser
+
+            $Script:Stats.SvnRevisions++
+
+            try {
+                # ── 4.2 Update SVN working copy to $rev (incremental delta) ──
+                # First (remaining) revision: WC is already at $checkoutRev.
+                # Subsequent revisions: svn update applies only the delta.
+                try {
+                    $updateOutput = Invoke-Svn @('update', '-r', $rev, $StagingDir)
+                }
+                catch {
+                    Write-Log ("svn update failed for $refUrl@$rev. Aborting.`n" +
+                        "URL: $refUrl`nRevision: $rev`nError: $_") -Level ERROR
+                    throw
+                }
+
+                $changedPaths = $null
+                if ($useFastPath) {
+                    $changedPaths = Get-ChangedPathsFromSvnOutput -Lines $updateOutput -WcDir $StagingDir
+
+                    # First loop iteration only: the initial checkout delivered the
+                    # whole tree (or whole remaining subtree on resume) via its own
+                    # `A    <path>` lines, which this iteration's `svn update`
+                    # (a same-revision no-op) does NOT repeat. Union the two parses
+                    # so symlinks/executable bits present at checkout are not missed.
+                    if ($null -ne $pendingCheckoutOutput) {
+                        $checkoutChangedPaths = Get-ChangedPathsFromSvnOutput -Lines $pendingCheckoutOutput -WcDir $StagingDir
+                        if ($null -eq $checkoutChangedPaths -or $null -eq $changedPaths) {
+                            # Either parse failed to classify a line — correctness over
+                            # speed: fall back to a full scan for this first revision only.
+                            $changedPaths = $null
+                        }
+                        else {
+                            $changedPaths = @((@($checkoutChangedPaths) + @($changedPaths)) | Select-Object -Unique)
+                        }
+                        $pendingCheckoutOutput = $null
+                    }
+                }
+
+                if ($useFastPath -and $null -ne $changedPaths) {
+                    # ── 4.3 (fast path) Index the SVN WC directly — no mirror copy ──
+                    Invoke-GitFastAdd -GitDotGit $gitDotGit -WcDir $StagingDir
+
+                    # ── 4.4 (fast path) svn:special over the changed set only ──
+                    [object[]]$symlinks = @(Resolve-SvnSpecialFilesFast -WcDir $StagingDir -ChangedPaths $changedPaths)
+                    if ($symlinks.Count -gt 0) {
+                        Stage-Symlinks -Symlinks $symlinks -GitDir $GitDir -KeepPlaceholder
+                    }
+
+                    # ── svn:executable over the changed set only ──
+                    Apply-ExecutableBitsFast -GitDir $GitDir -WcDir $StagingDir -ChangedPaths $changedPaths
+                }
+                else {
+                    # Filtered path, or fast-path parse failure for this revision
+                    # (correctness over speed): full mirror + full scans.
+                    # ── 4.3 Mirror WC → git working tree (robocopy handles deletes too) ──
+                    Copy-WcToRepo -WcDir $StagingDir -GitDir $GitDir `
+                                  -IgnorePattern $IgnorePattern `
+                                  -IncludePattern $IncludePattern
+
+                    # ── 4.4 Detect svn:special from local WC (no network) ──
+                    [object[]]$symlinks = @(Resolve-SvnSpecialFilesLocal -WcDir $StagingDir)
+
+                    Invoke-Git -GitDir $GitDir -GitArgs @('add', '-A') | Out-Null
+
+                    if ($symlinks.Count -gt 0) {
+                        Stage-Symlinks -Symlinks $symlinks -GitDir $GitDir
+                    }
+
+                    Apply-ExecutableBitsLocal -GitDir $GitDir -WcDir $StagingDir
+                }
+
+                # ── 4.6 Write tree + empty commit detection ───────────────
+                $newTreeSha = Invoke-Git -GitDir $GitDir -GitArgs @('write-tree')
+
+                # Compare against the PARENT commit's tree, not HEAD — HEAD is
+                # unborn during Phase 4, so a HEAD^{tree} comparison never fires.
+                $baseTreeSha = if ($parentSha) {
+                    Invoke-Git -GitDir $GitDir -GitArgs @('rev-parse', "$parentSha^{tree}") -AllowFailure
+                } else {
+                    '4b825dc642cb6eb9a060e54bf8d69288fbee4904'   # empty-tree SHA
+                }
+
+                $isEmptyCommit = ($newTreeSha -eq $baseTreeSha)
+                if ($isEmptyCommit -and -not $KeepEmpty) {
+                    Write-Log "  Rev ${rev}: empty tree (same as parent). Skipping."
+                    $Script:Stats.SkippedEmpty++
+                    # Still index this rev pointing at whatever parentSha is
+                    if ($lastCommitSha) {
+                        Update-ShaIndex -Url $refUrl -Rev $rev -Sha $lastCommitSha
+                    }
+                    continue
+                }
+
+                # ── 4.7 Author + date env vars ────────────────────────────
+                Set-GitAuthorEnv -Name $authorInfo.Name -Email $authorInfo.Email `
+                                 -Date $gitDate
+
+                # ── 4.8 Commit message (+ optional git-svn-id trailer) ────
+                $commitMsg = $svnMsg
+                if (-not $OmitMetadata) {
+                    $commitMsg = $svnMsg.TrimEnd() + "`n`ngit-svn-id: $refUrl@$rev $RepoUuid"
+                }
+
+                # ── 4.9 Create commit object ──────────────────────────────
+                try {
+                    $oldEAP = $ErrorActionPreference
+                    $ErrorActionPreference = 'Continue'   # prevent PS from treating git stderr as terminating
+                    if ($parentSha) {
+                        $commitSha = $commitMsg | & git -C $GitDir commit-tree $newTreeSha -p $parentSha 2>&1
+                    }
+                    else {
+                        $commitSha = $commitMsg | & git -C $GitDir commit-tree $newTreeSha 2>&1
+                    }
+                    $ErrorActionPreference = $oldEAP
+
+                    if ($LASTEXITCODE -ne 0) {
+                        $err = ($commitSha | Out-String).Trim()
+                        throw "git commit-tree failed: $err"
+                    }
+                    $commitSha = ($commitSha -join '').Trim()
+                }
+                finally {
+                    Clear-GitAuthorEnv
+                }
+
+                # ── 4.10 Update SHA index ─────────────────────────────────
+                Update-ShaIndex -Url $refUrl -Rev $rev -Sha $commitSha
+
+                $parentSha      = $commitSha
+                $lastCommitSha  = $commitSha
+                $lastAuthorInfo = $authorInfo
+                $lastGitDate    = $gitDate
+
+                $Script:Stats.TotalCommits++
+                $commitsThisRef++
             }
-            else {
-                $commitSha = $commitMsg | & git -C $GitDir commit-tree $newTreeSha 2>&1
+            finally {
+                $lastConvertedRev = $rev
+
+                Write-MigrationProgress -StateDir $StateDir -Phase $Phase -RefName $effectiveRefName `
+                    -Rev $rev -RevIndex $revIdx -RevTotal $totalRevs `
+                    -Commits $Script:Stats.TotalCommits -Status 'running'
+
+                if ($StateDir -and ($revIdx % 50 -eq 0)) { Save-MigrationState -StateDir $StateDir }
+
+                if ($commitsThisRef -gt 0 -and ($commitsThisRef % 1000 -eq 0)) {
+                    Invoke-GitGcAuto -GitDir $GitDir -Phase $Phase
+                }
             }
-            $ErrorActionPreference = $oldEAP
-
-            if ($LASTEXITCODE -ne 0) {
-                $err = ($commitSha | Out-String).Trim()
-                throw "git commit-tree failed: $err"
-            }
-            $commitSha = ($commitSha -join '').Trim()
         }
-        finally {
-            Clear-GitAuthorEnv
-        }
-
-        # ── 4.10 Update SHA index ─────────────────────────────────────
-        Update-ShaIndex -Url $refUrl -Rev $rev -Sha $commitSha
-
-        $parentSha      = $commitSha
-        $lastCommitSha  = $commitSha
-        $lastAuthorInfo = $authorInfo
-        $lastGitDate    = $gitDate
-
-        $Script:Stats.TotalCommits++
     }
 
     if (-not $lastCommitSha) {
         Write-Log "  No commits produced for $effectiveRefName. Ref not created." -Level WARN
         # Clean up the SVN working copy
         if (Test-Path $StagingDir) { Remove-Item $StagingDir -Recurse -Force -ErrorAction SilentlyContinue }
-        return
+        return 'complete'
     }
 
     # ── Update git ref ────────────────────────────────────────────────────
@@ -1193,7 +1575,7 @@ function Invoke-ConvertRef {
                 Write-Log ("  Tag $($Ref.TagName) already exists at a different commit " +
                     "($($existingTagCommit.Substring(0,8))). Skipping to preserve existing tag.") -Level WARN
             }
-            $Script:Stats.TotalTags++
+            # No-op re-run / finalize-only path — do NOT increment TotalTags.
             Write-Log "  → tag $($Ref.TagName) (existing)"
         } else {
             Set-GitAuthorEnv -Name $lastAuthorInfo.Name -Email $lastAuthorInfo.Email `
@@ -1213,14 +1595,30 @@ function Invoke-ConvertRef {
         }
     }
     else {
-        Invoke-Git -GitDir $GitDir `
-                   -GitArgs @('update-ref', $effectiveRefName, $lastCommitSha) | Out-Null
-        $Script:Stats.TotalBranches++
-        Write-Log "  → $effectiveRefName @ $($lastCommitSha.Substring(0,8))"
+        # Idempotency: branches had no re-run check at all — every re-run of an
+        # already-converted ref blindly incremented TotalBranches. Skip the
+        # increment (and the redundant update-ref) when the ref already points
+        # at this exact commit (no-op re-run / finalize-only path).
+        $existingBranchSha = Invoke-Git -GitDir $GitDir `
+                                        -GitArgs @('rev-parse', '--verify', $effectiveRefName) `
+                                        -AllowFailure
+        if ($existingBranchSha -and $existingBranchSha -eq $lastCommitSha) {
+            Write-Log "  → $effectiveRefName already @ $($lastCommitSha.Substring(0,8)) — skipping."
+        }
+        else {
+            Invoke-Git -GitDir $GitDir `
+                       -GitArgs @('update-ref', $effectiveRefName, $lastCommitSha) | Out-Null
+            $Script:Stats.TotalBranches++
+            Write-Log "  → $effectiveRefName @ $($lastCommitSha.Substring(0,8))"
+        }
     }
+
+    Invoke-GitGcAuto -GitDir $GitDir -Phase $Phase
 
     # Clean up the SVN working copy now that this ref is committed to git
     if (Test-Path $StagingDir) { Remove-Item $StagingDir -Recurse -Force -ErrorAction SilentlyContinue }
+
+    return 'complete'
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1410,7 +1808,26 @@ function Invoke-CreateIgnore {
 function Write-Summary {
     param([string]$GitDir, [string]$SvnUrl)
 
-    $totalRefs = $Script:Stats.TotalBranches + $Script:Stats.TotalTags
+    # Ref counts are derived LIVE from the git repo rather than trusted from
+    # the persisted TotalBranches/TotalTags counters. Those counters only
+    # ever go up — re-running an already-converted phase 4/5/6 (idempotent
+    # by design) used to re-increment them on every no-op re-run, inflating
+    # the summary (e.g. "3 branches, 2 tags" for a repo with 2 branches, 1
+    # tag). git itself is always the ground truth for what refs exist.
+    $branchCount = 0
+    $tagCount    = 0
+    try {
+        $branchLines = & git -C $GitDir for-each-ref --format='%(refname)' refs/heads 2>&1
+        if ($LASTEXITCODE -eq 0) { $branchCount = @($branchLines | Where-Object { $_ }).Count }
+
+        $tagLines = & git -C $GitDir for-each-ref --format='%(refname)' refs/tags 2>&1
+        if ($LASTEXITCODE -eq 0) { $tagCount = @($tagLines | Where-Object { $_ }).Count }
+    }
+    catch {
+        Write-Log "  Could not enumerate refs for summary: $_" -Level WARN
+    }
+
+    $totalRefs = $branchCount + $tagCount
     $dirtyList = if ($Script:Stats.DirtyTags.Count -gt 0) {
         $Script:Stats.DirtyTags -join ', '
     } else { '(none)' }
@@ -1424,7 +1841,7 @@ function Write-Summary {
     Write-Host ''
     Write-Host '═══════════════════════════════════════════════════════' -ForegroundColor Green
     Write-Host ' Migration complete.' -ForegroundColor Green
-    Write-Host "   Refs:                       $($Script:Stats.TotalBranches) branches, $($Script:Stats.TotalTags) tags"
+    Write-Host "   Refs:                       $branchCount branches, $tagCount tags"
     Write-Host "   Commits:                    $($Script:Stats.TotalCommits)"
     Write-Host "   SVN revisions processed:    $($Script:Stats.SvnRevisions)"
     Write-Host "   Skipped (empty after filter): $($Script:Stats.SkippedEmpty)"
@@ -1576,6 +1993,48 @@ function Save-MigrationState {
         OrphanedBranches = @($Script:Stats.OrphanedBranches)
     }
     $statsJson | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $StateDir 'stats.json') -Encoding UTF8
+}
+
+function Write-MigrationProgress {
+    <#
+    Write $StateDir\progress.json (single ConvertTo-Json, overwrite) so an
+    external poller can show live status for the ref currently being
+    converted. Called once per processed revision from Invoke-ConvertRef.
+    Degrades gracefully to a no-op when $StateDir is empty/absent so callers
+    that don't pass phase/state-dir context (e.g. ad-hoc testing) still work.
+    #>
+    param(
+        [string]$StateDir,
+        [string]$Phase,
+        [string]$RefName,
+        [int]   $Rev,
+        [int]   $RevIndex,
+        [int]   $RevTotal,
+        [int]   $Commits,
+        [ValidateSet('running', 'checkpoint', 'complete', 'error')]
+        [string]$Status,
+        [string]$Message = ''
+    )
+    if (-not $StateDir) { return }
+
+    $obj = [ordered]@{
+        phase     = $Phase
+        ref       = $RefName
+        rev       = $Rev
+        revIndex  = $RevIndex
+        revTotal  = $RevTotal
+        commits   = $Commits
+        status    = $Status
+        message   = $Message
+        updatedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    }
+    try {
+        $obj | ConvertTo-Json -Depth 4 |
+            Set-Content -LiteralPath (Join-Path $StateDir 'progress.json') -Encoding UTF8
+    }
+    catch {
+        Write-Log "  Could not write progress.json: $_" -Level WARN
+    }
 }
 
 function Import-MigrationState {

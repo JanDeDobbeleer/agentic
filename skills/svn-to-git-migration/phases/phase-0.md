@@ -106,7 +106,7 @@ try {
     if (-not $preflight) { throw "Preflight checks failed." }
     Save-MigrationState -StateDir $stateDir
     Write-Host "Phase 0 complete. State dir: $stateDir"
-    Write-Host "CANONICAL_STATEDIT=$stateDir"
+    Write-Host "CANONICAL_STATEDIR=$stateDir"
     Write-Host "CANONICAL_TARGET=$resolvedTarget"
 }
 catch {

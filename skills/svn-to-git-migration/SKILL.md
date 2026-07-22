@@ -258,9 +258,24 @@ If a phase fails, fix the problem and re-run that phase — earlier phases don't
 >
 > **Why:** Keeps your context small. Phase output (potentially hundreds of lines of SVN progress) goes into subagent context, not yours. You only see the summary returned by the subagent.
 >
+> **Phases 4, 5, 6 — detached mode + polling (mandatory):** These phases can run for hours.
+> A subagent call that stays open that long dies when its session token expires (`403` /
+> "token expired or invalid") — a long-lived request can't be refreshed from the inside.
+> Detached processes don't have this problem: they survive independently of the tool call,
+> the subagent, and even the orchestrator's own session. So for phases 4–6, launch via the
+> **detached mode** launcher in `phases/run-phase.md` (a short subagent call that starts a
+> background process and returns immediately), then poll `progress.json` /
+> `phase-<N>.status.json` every 2–5 minutes with short subagent calls — never hold one call
+> open waiting for the phase to finish. If corporate policy blocks spawning detached
+> processes, use the **chunked fallback** instead: run the foreground snippet with
+> `$maxMinutes` set (e.g. `20`) and relaunch until the phase reports `success`. Any phase can
+> be safely re-run — already-converted revisions/refs are skipped via the SHA index, so a
+> relaunch after a checkpoint or an error always resumes rather than restarting.
+>
 > **How to launch a phase as a subagent:**
 > 1. **Phase 0:** `task(prompt="Read phases/phase-0.md in skill dir <skillDir>. Fill in all interview values. Run the PowerShell snippet.")`
-> 2. **Phases 1–8:** `task(prompt="Read phases/run-phase.md in skill dir <skillDir>. Set $skillDir='<skillDir>', $stateDir='<stateDir>', $phase='<N>'. Run the PowerShell snippet.")`
+> 2. **Phases 1, 2, 3, 7, 8:** `task(prompt="Read phases/run-phase.md in skill dir <skillDir>. Set $skillDir='<skillDir>', $stateDir='<stateDir>', $phase='<N>'. Run the foreground PowerShell snippet.")`
+> 3. **Phases 4, 5, 6:** `task(prompt="Read phases/run-phase.md in skill dir <skillDir>. Set $skillDir='<skillDir>', $stateDir='<stateDir>', $phase='<N>'. Run the detached-mode launcher snippet and report the LAUNCHED line.")`, then poll with separate short subagent calls per the polling protocol in that runbook.
 >
 > Only 3 substitutions for phases 1–8: `$skillDir` (constant), `$stateDir` (from Phase 0), `$phase` (the number). No assembling 30-line templates.
 >
@@ -282,16 +297,16 @@ If a phase fails, fix the problem and re-run that phase — earlier phases don't
 | Step | What | How |
 |------|------|-----|
 | Detect | Auto-detect SVN repo | Subagent reads `phases/detect.md` — returns URL, layout, authors, head revision |
-| Phase 0 | Preflight + config | Subagent reads `phases/phase-0.md` — 15+ placeholder values from interview. **Capture `CANONICAL_STATEDIT=` and `CANONICAL_TARGET=` from its output — these are `$stateDir` and `$target` for all subsequent phases.** |
+| Phase 0 | Preflight + config | Subagent reads `phases/phase-0.md` — 15+ placeholder values from interview. **Capture `CANONICAL_STATEDIR=` and `CANONICAL_TARGET=` from its output — these are `$stateDir` and `$target` for all subsequent phases.** |
 | Phases 1 + 2 + 3 | Git init, Author map, Resolve refs | **3 subagents in parallel** — each reads `phases/run-phase.md` with `$phase='1'`, `'2'`, `'3'`. Only 3 substitutions: `$skillDir`, `$stateDir`, `$phase`. **Use lightest available model.** |
-| Phase 4 | Convert trunk | Subagent reads `phases/run-phase.md` with `$phase='4'`. **Before launching, tell the user: "Phase 4 is starting — this replays every trunk revision and can take minutes to hours."** Use lightest available model. _(long-running)_ |
-| Phase 5 | Convert branches | Subagent reads `phases/run-phase.md` with `$phase='5'`. Warn if repo has many branches. Use lightest available model. |
-| Phase 6 | Convert tags | Subagent reads `phases/run-phase.md` with `$phase='6'`. Use lightest available model. |
+| Phase 4 | Convert trunk | Subagent reads `phases/run-phase.md` with `$phase='4'`. **Before launching, tell the user: "Phase 4 is starting — this replays every trunk revision and can take minutes to hours."** **Launch detached, then poll** (see orchestration note above) — never a single blocking call. Use lightest available model. _(long-running)_ |
+| Phase 5 | Convert branches | Subagent reads `phases/run-phase.md` with `$phase='5'`. Warn if repo has many branches. **Launch detached, then poll.** Use lightest available model. |
+| Phase 6 | Convert tags | Subagent reads `phases/run-phase.md` with `$phase='6'`. **Launch detached, then poll.** Use lightest available model. |
 | Phase 7 | Post-processing | Subagent reads `phases/run-phase.md` with `$phase='7'`. Use lightest available model. |
 | Phase 8 | Summary | Subagent reads `phases/run-phase.md` with `$phase='8'`. Use lightest available model. |
 
-- After each subagent completes, report a one-line status to the user: `✅ Phase N complete — <key result>`
-- If a subagent fails, read the `## On error` table in the runbook, fix the problem, and re-launch that phase's subagent only — earlier phases don't need to repeat (state is preserved in `$target\.svn2git\`)
+- After each subagent completes (or, for phases 4–6, after polling reports `success`), report a one-line status to the user: `✅ Phase N complete — <key result>`
+- If a phase fails, consult the consolidated `## On error` tables in `phases/run-phase.md`, fix the problem, and re-launch that phase only — earlier phases don't need to repeat (state is preserved in `$target\.svn2git\`); any phase can be safely re-run since already-converted revisions/refs are skipped automatically
 - A state guard at the start of phases 4–6 will tell you exactly which prior phase to re-run if state files are missing
 
 The most common issues are covered in `references/troubleshooting.md`.

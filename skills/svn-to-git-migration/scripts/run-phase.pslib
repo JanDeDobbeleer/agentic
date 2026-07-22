@@ -12,6 +12,12 @@
 if (-not $stateDir) { throw '`$stateDir` must be set before loading run-phase.pslib' }
 if (-not $phase)    { throw '`$phase` must be set before loading run-phase.pslib' }
 
+# Windows PowerShell 5.1's console output encoding defaults to the legacy
+# system codepage, which mangles the box-drawing/arrow characters used in
+# Write-Log/Write-RevProgress into mojibake once output is redirected to a
+# log file in detached mode. Best-effort only — never fatal.
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+
 # ── Load core functions from state directory ──────────────────────────────────
 . ([scriptblock]::Create([System.IO.File]::ReadAllText("$stateDir\core.pslib")))
 
@@ -25,10 +31,50 @@ if ($_missing.Count -gt 0) {
     throw ("Required state files missing from '$stateDir':`n  " + ($_missing -join "`n  "))
 }
 
+# ── Phase status file: $stateDir\phase-<N>.status.json, written when this
+#    phase run ends (success/checkpoint/error). Delete any stale file from a
+#    previous run of this same phase up front, so a poller never reads a
+#    result that isn't from THIS invocation. ────────────────────────────────
+function Write-PhaseStatusFile {
+    param(
+        [string]$StateDir,
+        [string]$Phase,
+        [ValidateSet('success', 'checkpoint', 'error')]
+        [string]$Status,
+        [string]$Message = ''
+    )
+    $obj = [ordered]@{
+        phase       = $Phase
+        status      = $Status
+        message     = $Message
+        completedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    }
+    try {
+        $obj | ConvertTo-Json -Depth 4 |
+            Set-Content -LiteralPath (Join-Path $StateDir "phase-$Phase.status.json") -Encoding UTF8
+    }
+    catch {
+        Write-Host "WARNING: could not write phase-$Phase.status.json: $_"
+    }
+}
+
+$_phaseStatusFile = Join-Path $stateDir "phase-$phase.status.json"
+if (Test-Path $_phaseStatusFile) { Remove-Item $_phaseStatusFile -Force -ErrorAction SilentlyContinue }
+
 $cfg = Initialize-PhaseContext -StateDir $stateDir
+
+# ── Time budget: optional $maxMinutes in the calling scope. 0/unset = unlimited.
+#    Applies to phases 4, 5, 6 only.
+if (-not $maxMinutes) { $maxMinutes = 0 }
+$deadline = if ($maxMinutes -gt 0) { (Get-Date).AddMinutes($maxMinutes) } else { $null }
+
+# Set within phases 4/5/6 when a ref reports a checkpoint, so the wrapper
+# below knows to record phase status 'checkpoint' instead of 'success'.
+$script:_phaseCheckpointed = $false
 
 # ─────────────────────────────────────────────────────────────────────────────
 
+try {
 switch ($phase) {
 
     '1' {
@@ -101,12 +147,12 @@ switch ($phase) {
         $authorMap = Import-AuthorMap    -FilePath $cfg.AuthorsFile
 
         $trunkRef     = "refs/heads/$($cfg.DefaultBranch)"
-        $filteredRefs = $refs | Where-Object { -not $_.IsTag -and $_.RefName -eq $trunkRef }
+        $filteredRefs = @($refs | Where-Object { -not $_.IsTag -and $_.RefName -eq $trunkRef })
 
         Write-Host "Phase 4: converting $($filteredRefs.Count) trunk ref(s). This may take a long time."
         try {
             foreach ($ref in $filteredRefs) {
-                Invoke-ConvertRef `
+                $_result = Invoke-ConvertRef `
                     -Ref               $ref `
                     -GitDir            $cfg.Target `
                     -StagingDir        $staging.StagingDir `
@@ -118,9 +164,20 @@ switch ($phase) {
                     -KeepEmpty:        ([switch][bool]$cfg.NoSkipEmptyCommits) `
                     -OmitMetadata:     ([switch][bool]$cfg.NoMetadata) `
                     -AllTagsAsBranches:([switch][bool]$cfg.TagsAsBranches) `
-                    -SourceEncoding    $cfg.Encoding
+                    -SourceEncoding    $cfg.Encoding `
+                    -StateDir          $stateDir `
+                    -Phase             $phase `
+                    -Deadline          $deadline
+                if ($_result -eq 'checkpoint') {
+                    $script:_phaseCheckpointed = $true
+                    break
+                }
             }
-            Write-Host "Phase 4 complete."
+            if ($script:_phaseCheckpointed) {
+                Write-Host "Phase 4 checkpoint — re-run this phase to continue."
+            } else {
+                Write-Host "Phase 4 complete."
+            }
         }
         finally {
             if (Test-Path $staging.TempBase) { Remove-Item $staging.TempBase -Recurse -Force -ErrorAction SilentlyContinue }
@@ -143,12 +200,12 @@ switch ($phase) {
         $authorMap = Import-AuthorMap    -FilePath $cfg.AuthorsFile
 
         $trunkRef     = "refs/heads/$($cfg.DefaultBranch)"
-        $filteredRefs = $refs | Where-Object { -not $_.IsTag -and $_.RefName -ne $trunkRef }
+        $filteredRefs = @($refs | Where-Object { -not $_.IsTag -and $_.RefName -ne $trunkRef })
 
         Write-Host "Phase 5: converting $($filteredRefs.Count) branch ref(s)."
         try {
             foreach ($ref in $filteredRefs) {
-                Invoke-ConvertRef `
+                $_result = Invoke-ConvertRef `
                     -Ref               $ref `
                     -GitDir            $cfg.Target `
                     -StagingDir        $staging.StagingDir `
@@ -160,9 +217,20 @@ switch ($phase) {
                     -KeepEmpty:        ([switch][bool]$cfg.NoSkipEmptyCommits) `
                     -OmitMetadata:     ([switch][bool]$cfg.NoMetadata) `
                     -AllTagsAsBranches:([switch][bool]$cfg.TagsAsBranches) `
-                    -SourceEncoding    $cfg.Encoding
+                    -SourceEncoding    $cfg.Encoding `
+                    -StateDir          $stateDir `
+                    -Phase             $phase `
+                    -Deadline          $deadline
+                if ($_result -eq 'checkpoint') {
+                    $script:_phaseCheckpointed = $true
+                    break
+                }
             }
-            Write-Host "Phase 5 complete."
+            if ($script:_phaseCheckpointed) {
+                Write-Host "Phase 5 checkpoint — re-run this phase to continue."
+            } else {
+                Write-Host "Phase 5 complete."
+            }
         }
         finally {
             if (Test-Path $staging.TempBase) { Remove-Item $staging.TempBase -Recurse -Force -ErrorAction SilentlyContinue }
@@ -184,12 +252,12 @@ switch ($phase) {
         $revRange  = Parse-RevisionRange -RevRange $cfg.Revision
         $authorMap = Import-AuthorMap    -FilePath $cfg.AuthorsFile
 
-        $filteredRefs = $refs | Where-Object { $_.IsTag -eq $true }
+        $filteredRefs = @($refs | Where-Object { $_.IsTag -eq $true })
 
         Write-Host "Phase 6: converting $($filteredRefs.Count) tag ref(s)."
         try {
             foreach ($ref in $filteredRefs) {
-                Invoke-ConvertRef `
+                $_result = Invoke-ConvertRef `
                     -Ref               $ref `
                     -GitDir            $cfg.Target `
                     -StagingDir        $staging.StagingDir `
@@ -201,9 +269,20 @@ switch ($phase) {
                     -KeepEmpty:        ([switch][bool]$cfg.NoSkipEmptyCommits) `
                     -OmitMetadata:     ([switch][bool]$cfg.NoMetadata) `
                     -AllTagsAsBranches:([switch][bool]$cfg.TagsAsBranches) `
-                    -SourceEncoding    $cfg.Encoding
+                    -SourceEncoding    $cfg.Encoding `
+                    -StateDir          $stateDir `
+                    -Phase             $phase `
+                    -Deadline          $deadline
+                if ($_result -eq 'checkpoint') {
+                    $script:_phaseCheckpointed = $true
+                    break
+                }
             }
-            Write-Host "Phase 6 complete."
+            if ($script:_phaseCheckpointed) {
+                Write-Host "Phase 6 checkpoint — re-run this phase to continue."
+            } else {
+                Write-Host "Phase 6 complete."
+            }
         }
         finally {
             if (Test-Path $staging.TempBase) { Remove-Item $staging.TempBase -Recurse -Force -ErrorAction SilentlyContinue }
@@ -258,4 +337,12 @@ switch ($phase) {
     default {
         throw "Unknown phase '$phase'. Valid values are '1' through '8'. Phase 0 uses phases/phase-0.md directly."
     }
+}
+
+    $_finalStatus = if ($script:_phaseCheckpointed) { 'checkpoint' } else { 'success' }
+    Write-PhaseStatusFile -StateDir $stateDir -Phase $phase -Status $_finalStatus
+}
+catch {
+    Write-PhaseStatusFile -StateDir $stateDir -Phase $phase -Status 'error' -Message $_.Exception.Message
+    throw
 }
