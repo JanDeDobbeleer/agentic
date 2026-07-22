@@ -1,6 +1,7 @@
 # Troubleshooting
 
-Common problems and fixes for `migrate.sh` / `migrate.ps1`.
+Common problems and fixes for SVN-to-Git migration. Bash path: `scripts/migrate.sh` (macOS/Linux).
+Windows path: inline phase runbooks (`phases/run-phase.md`, executed via `powershell -Command`).
 
 ---
 
@@ -302,7 +303,7 @@ are relative to it.
 
 ---
 
-## 12. Environment noise — unexpected output from third-party tools
+## 11. Environment noise — unexpected output from third-party tools
 
 **Symptom:** Lines like the following appear in the migration output, mixed in with `svn`
 or `git` output:
@@ -338,47 +339,34 @@ powershell.exe -NoProfile -Command "..."
 
 ---
 
+## 12. ExecutionPolicy / "running scripts is disabled" (Windows)
 
-
-**Symptom:**
+**Symptom (Windows):**
 ```
-File migrate.ps1 cannot be loaded because running scripts is disabled on this system.
-```
-or
-```
-migrate.ps1 is not digitally signed.
+File ... cannot be loaded because running scripts is disabled on this system.
 ```
 
 **Root cause:** Windows Group Policy can set `MachinePolicy` or `UserPolicy` to
 `Restricted` or `AllSigned`. These policy-enforced settings **cannot be overridden**
-with `-ExecutionPolicy Bypass` on the command line — that flag only overrides
-user-level (`CurrentUser`) and machine-level (`LocalMachine`) preferences, not
-GPO-enforced policies.
+with `-ExecutionPolicy Bypass`, and they block both `-File` execution and dot-sourcing
+a script file by path (`. C:\path\to\file.ps1`).
 
-**Resolution — use Snippet Mode (recommended):**
-
-See the **"Snippet Mode (Execution Policy Blocked)"** section in `SKILL.md` for the
-full guided flow. In short: paste each phase as a code block into an interactive
-`powershell.exe` or `pwsh.exe` window. Interactive input is evaluated by the REPL,
-not as a script file, and is therefore **never** subject to ExecutionPolicy — even
-under the strictest GPO.
-
-**Workaround — paste into interactive PowerShell:**
+**Why the skill is not affected:** the Windows migration path never executes a script
+file. Each phase runs as inline code via `powershell -Command`, and the `.pslib`
+libraries are loaded by reading the file as text and dot-sourcing a scriptblock —
+which ExecutionPolicy does not apply to:
 
 ```powershell
-# Open powershell.exe or pwsh.exe interactively, then paste:
-$SkillDir = 'C:\path\to\skill\svn-to-git-migration'
-. "$SkillDir\scripts\_migrate.core.ps1"
-# ... then call functions directly or use the phase subcommand
+. ([scriptblock]::Create([System.IO.File]::ReadAllText("$skillDir\lib\core.pslib")))
 ```
+
+If you see this symptom anyway, some step tried `-File` or dot-sourced a file path
+directly. Re-run the phase using the snippet from `phases/run-phase.md`, which uses
+the scriptblock technique above.
 
 **Check your current policy levels:**
 ```powershell
 Get-ExecutionPolicy -List
-# MachinePolicy / UserPolicy set by GPO → cannot be bypassed
-# Process / CurrentUser / LocalMachine set by admin/user → can be bypassed
+# MachinePolicy / UserPolicy set by GPO → affects script-file execution only
+# Inline -Command code and scriptblock dot-sourcing are not affected
 ```
-
-**Why -ExecutionPolicy Bypass sometimes still works:** If only `LocalMachine` is set
-to `Restricted` (not a GPO-enforced policy), `-ExecutionPolicy Bypass` overrides it
-successfully. The block only applies when the *Policy* columns show a restrictive value.

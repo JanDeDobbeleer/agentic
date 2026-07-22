@@ -1,8 +1,9 @@
 # git-svn → This Skill: Flag Mapping
 
-This document maps every `git svn` CLI switch to the equivalent option in
-`migrate.sh` / `migrate.ps1`. Use it when you're migrating an existing `git svn`
-workflow or adapting a `git svn clone` command you found in documentation.
+This document maps every `git svn` CLI switch to the equivalent option in the
+skill (bash: `scripts/migrate.sh`, Windows: inline phases). Use it when you're
+migrating an existing `git svn` workflow or adapting a `git svn clone` command you
+found in documentation.
 
 ---
 
@@ -10,7 +11,7 @@ workflow or adapting a `git svn clone` command you found in documentation.
 
 | git-svn command / flag | This skill's equivalent | Notes |
 |------------------------|-------------------------|-------|
-| `git svn clone <url>` | `migrate.sh run <url>` / `migrate.ps1 run <url>` | One-time migration; clones and converts in a single pass |
+| `git svn clone <url>` | bash: `scripts/migrate.sh run <url>` / Windows: phase runbooks (see `phases/run-phase.md`) | One-time migration; clones and converts in a single pass |
 | `--stdlayout` / `-s` | `--stdlayout` | Identical — assumes `trunk/`, `branches/`, `tags/` layout |
 | `--trunk <path>` / `-T <path>` | `--trunk <path>` / `-T <path>` | Identical |
 | `--branches <path>` / `-b <path>` | `--branches <path>` / `-b <path>` | Identical; repeatable for multiple branch paths |

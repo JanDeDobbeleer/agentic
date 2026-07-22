@@ -4,27 +4,31 @@
     {
       "id": 1,
       "prompt": "Hey, we're finally moving our old SVN repo off the company server. The URL is https://svn.internal.corp/repos/billing — it uses the standard trunk/branches/tags layout. We have about 8 years of history and 12 different committers. I want to end up with a proper git repo with all the history, branches, and tags intact. We're on Windows. How do I do this?",
-      "expected_output": "Skill activates. Guides user to detect, then through: stdlayout selection, authors file creation (with template), metadata/tag/branch-name decisions. Generates the exact pwsh migrate.ps1 run command with --stdlayout --authors-file flags. Covers verification steps and push-to-remote next steps.",
+      "expected_output": "Skill activates. Guides user through detect phase (via inline PowerShell), then stdlayout selection, authors file creation (with template), metadata/tag/branch-name decisions. Generates inline PowerShell phase snippets (0–8) for execution via `powershell -Command [scriptblock]::Create`, with periodic checkpoints and time budget. Covers verification steps and push-to-remote next steps.",
       "assertions": [
         {
           "name": "detects_windows_platform",
-          "check": "Response references migrate.ps1 or PowerShell (not migrate.sh or bash) as the script to use"
+          "check": "Response references inline PowerShell phases (phases/run-phase.md, lib/core.pslib, scripts/run-phase.pslib) or `powershell -Command` (not migrate.sh or bash or migrate.ps1)"
         },
         {
           "name": "runs_detect_first",
-          "check": "Response instructs user to run the detect subcommand before the full migration"
+          "check": "Response instructs user to run detect phase (inline PowerShell) before proceeding to migration phases"
         },
         {
-          "name": "stdlayout_flag_present",
-          "check": "Generated command includes --stdlayout flag"
+          "name": "stdlayout_config_noted",
+          "check": "Response guides user to select or confirm stdlayout configuration during the interview"
         },
         {
           "name": "authors_file_guidance",
-          "check": "Response explains the authors file format (user = Name <email>) and offers to generate a stub from the detect output"
+          "check": "Response explains the authors file format (user = Name <email>) and offers to generate a stub from detect output"
+        },
+        {
+          "name": "phase_snippets_generated",
+          "check": "Response generates inline PowerShell phase snippets (or references phases 0–8) for copy-paste into interactive PowerShell"
         },
         {
           "name": "verification_steps_included",
-          "check": "Response includes verification commands (git log, git branch, git tag) after migration"
+          "check": "Response includes verification commands (git log, git branch, git tag) after all phases complete"
         }
       ]
     },

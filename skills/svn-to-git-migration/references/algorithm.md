@@ -1,8 +1,13 @@
 # SVN → Git Migration — Shared Algorithm Spec
 
-This document is the **parity contract** for `scripts/migrate.sh` (bash) and
-`scripts/migrate.ps1` (PowerShell 7). Both implementations must follow every rule
+This document is the **parity contract** for `scripts/migrate.sh` (bash, macOS/Linux) and
+the PowerShell implementation via inline phases (`lib/core.pslib`, executed through `phases/run-phase.md`
+and `scripts/run-phase.pslib`; Windows only). Both implementations must follow every rule
 here. When the two diverge, this spec is authoritative.
+
+The PowerShell implementation additionally supports resume from the persisted SHA index,
+periodic checkpoints during long-running phases, and a configurable `$maxMinutes` time budget —
+features not yet available in the bash path.
 
 ---
 
@@ -14,20 +19,21 @@ here. When the two diverge, this spec is authoritative.
 | `git` | 2.x | git plumbing: `hash-object`, `write-tree`, `commit-tree`, `update-ref`, `update-index` |
 | `bash` | **4.0** | macOS ships 3.2 — no associative arrays. Script MUST check `${BASH_VERSINFO[0]} -lt 4` at startup and abort with: `"bash 4.0+ required. On macOS: brew install bash"` |
 | `python3` | 3.x | Used for XML parsing in bash (avoids xmllint/xpath portability issues) |
-| `PowerShell` | **7.0** | Windows; PS 5.1 lacks `[SortedDictionary]` generics needed for the index |
+| `powershell` (or `pwsh`) | **5.1** | Windows; executed via `powershell -Command` with `[scriptblock]::Create` dot-sourcing (Group Policy blocks `-File` execution) |
 
 ---
 
 ## Subcommands
 
-Each script exposes two subcommands:
+**bash (macOS/Linux):**
+```
+scripts/migrate.sh detect <svn-url> [options]   # preflight: info, layout, authors, size
+scripts/migrate.sh run    <svn-url> [options]   # perform migration
+```
 
-```
-migrate.sh detect <svn-url> [options]   # preflight: info, layout, authors, size
-migrate.sh run    <svn-url> [options]   # perform migration
-migrate.ps1 detect <svn-url> [options]
-migrate.ps1 run    <svn-url> [options]
-```
+**Windows (inline phases):**
+The Windows path uses phase runbooks via `phases/run-phase.md` and `scripts/run-phase.pslib`.
+See the skill's interview step for guided execution.
 
 ---
 
