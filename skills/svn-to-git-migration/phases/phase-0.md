@@ -2,31 +2,33 @@
 
 ## Purpose
 
-Create the state directory, write `config.json` with all migration options, copy `lib\core.pslib` to the state directory, and run `Invoke-Preflight` to verify that `svn` can reach the repository and (optionally) that the authors file is valid. This phase loads `lib\core.pslib` from the **skill directory** — the state directory does not exist yet.
+Create the state directory, write `config.json` with all migration options, copy `lib\core.pslib` to the state
+directory, and run `Invoke-Preflight` to verify that `svn` can reach the repository and (optionally) that the authors
+file is valid. This phase loads `lib\core.pslib` from the **skill directory** — the state directory does not exist yet.
 
 ## Inputs
 
 All values must be filled in from the user's interview answers before running:
 
-| Variable | Description |
-|----------|-------------|
-| `$skillDir` | Absolute path to the `svn-to-git-migration` skill directory |
-| `$svnUrl` | SVN repository URL |
-| `$target` | Where the git repo will be created |
-| `$stdLayout` | `$true` if the repo has `trunk/branches/tags` at root |
-| `$trunk` | Custom trunk path (empty string when `$stdLayout = $true`) |
-| `$branches` | Array of custom branch paths (empty array when `$stdLayout = $true`) |
-| `$tags` | Array of custom tag paths (empty array when `$stdLayout = $true`) |
-| `$authorsFile` | Path to `authors.txt`, or empty string if none |
-| `$noMetadata` | `$true` to omit `git-svn-id` trailers |
-| `$ignorePaths` | Regex string for paths to exclude, or empty |
-| `$includePaths` | Regex string for paths to include (whitelist), or empty |
-| `$revision` | Revision range e.g. `'1:HEAD'` |
-| `$noSkipEmpty` | `$true` to keep empty commits |
-| `$defaultBranch` | Name for the trunk in git (e.g. `'main'`) |
-| `$tagsAsBranch` | `$true` to force all SVN tags to become branches |
-| `$noCreateIgnore` | `$true` to skip `svn:ignore` → `.gitignore` conversion |
-| `$encoding` | Source encoding e.g. `'windows-1252'`, or empty |
+| Variable          | Description                                                          |
+| ----------------- | -------------------------------------------------------------------- |
+| `$skillDir`       | Absolute path to the `svn-to-git-migration` skill directory          |
+| `$svnUrl`         | SVN repository URL                                                   |
+| `$target`         | Where the git repo will be created                                   |
+| `$stdLayout`      | `$true` if the repo has `trunk/branches/tags` at root                |
+| `$trunk`          | Custom trunk path (empty string when `$stdLayout = $true`)           |
+| `$branches`       | Array of custom branch paths (empty array when `$stdLayout = $true`) |
+| `$tags`           | Array of custom tag paths (empty array when `$stdLayout = $true`)    |
+| `$authorsFile`    | Path to `authors.txt`, or empty string if none                       |
+| `$noMetadata`     | `$true` to omit `git-svn-id` trailers                                |
+| `$ignorePaths`    | Regex string for paths to exclude, or empty                          |
+| `$includePaths`   | Regex string for paths to include (whitelist), or empty              |
+| `$revision`       | Revision range e.g. `'1:HEAD'`                                       |
+| `$noSkipEmpty`    | `$true` to keep empty commits                                        |
+| `$defaultBranch`  | Name for the trunk in git (e.g. `'main'`)                            |
+| `$tagsAsBranch`   | `$true` to force all SVN tags to become branches                     |
+| `$noCreateIgnore` | `$true` to skip `svn:ignore` → `.gitignore` conversion               |
+| `$encoding`       | Source encoding e.g. `'windows-1252'`, or empty                      |
 
 ## PowerShell snippet
 
@@ -123,9 +125,18 @@ catch {
 
 ## On error
 
-| Symptom | Likely cause | Fix |
-|---------|-------------|-----|
-| `$target must be an absolute path` | Orchestrator passed a relative path | Resolve to absolute before passing: use the CWD returned by detect and join it with the relative target |
-| `Cannot find path … core.pslib` | `$skillDir` is wrong | Verify the skill directory path; `lib\core.pslib` must exist |
-| `Preflight checks failed` | SVN unreachable or authors file missing | Check SVN URL and credentials; verify `$authorsFile` path exists |
-| `Access denied` creating `$stateDir` | Permissions on `$target` | Choose a different target directory or run as Administrator |
+- **Symptom:** `$target must be an absolute path`
+  - **Likely cause:** Orchestrator passed a relative path
+  - **Fix:** Resolve to absolute before passing: use the CWD returned by detect and join it with the relative target
+
+- **Symptom:** `Cannot find path … core.pslib`
+  - **Likely cause:** `$skillDir` is wrong
+  - **Fix:** Verify the skill directory path; `lib\core.pslib` must exist
+
+- **Symptom:** `Preflight checks failed`
+  - **Likely cause:** SVN unreachable or authors file missing
+  - **Fix:** Check SVN URL and credentials; verify `$authorsFile` path exists
+
+- **Symptom:** `Access denied` creating `$stateDir`
+  - **Likely cause:** Permissions on `$target`
+  - **Fix:** Choose a different target directory or run as Administrator

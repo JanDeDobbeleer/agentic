@@ -2,9 +2,12 @@
 
 ## Purpose
 
-Auto-detect whether the current working directory is an SVN working copy or bare repository, gather layout and author info, and return a structured summary to the orchestrating agent. The orchestrator uses this to conduct the migration interview. No function library is required — only the `svn` CLI.
+Auto-detect whether the current working directory is an SVN working copy or bare repository, gather layout and author
+info, and return a structured summary to the orchestrating agent. The orchestrator uses this to conduct the migration
+interview. No function library is required — only the `svn` CLI.
 
-**This runbook is executed by a subagent. Do not ask the user for anything — return all findings as structured output at the end.**
+**This runbook is executed by a subagent. Do not ask the user for anything — return all findings as structured output at
+the end.**
 
 ## Inputs
 
@@ -84,21 +87,50 @@ Write-Host "=== END DETECT RESULT ==="
 
 The orchestrator reads the `=== DETECT RESULT ===` block. Key fields:
 
-| Field | Meaning |
-|-------|---------|
-| `NEEDS_URL: true` | URL not auto-detected — orchestrator must ask the user before Phase 0 |
-| `NEEDS_URL: false` | URL detected — confirm with the user, then proceed to interview |
-| `LAYOUT: standard` | Repo has `trunk/`, `branches/`, `tags/` — suggest `--stdlayout` in interview |
-| `LAYOUT: custom` | Non-standard paths — orchestrator must ask user to specify them |
-| `AUTHOR_SCAN_COMPLETE` | `true` = all committers discovered; `false` = scan failed (e.g. network timeout) — some authors may be missing |
-| `AUTHORS` | Comma-separated list — orchestrator offers to build `authors.txt` |
+- **Field:** `NEEDS_URL: true`
+  - **Meaning:** URL not auto-detected — orchestrator must ask the user before Phase 0
+
+- **Field:** `NEEDS_URL: false`
+  - **Meaning:** URL detected — confirm with the user, then proceed to interview
+
+- **Field:** `LAYOUT: standard`
+  - **Meaning:** Repo has `trunk/`, `branches/`, `tags/` — suggest `--stdlayout` in interview
+
+- **Field:** `LAYOUT: custom`
+  - **Meaning:** Non-standard paths — orchestrator must ask user to specify them
+
+- **Field:** `AUTHOR_SCAN_COMPLETE`
+  - **Meaning:** `true` = all committers discovered; `false` = scan failed (e.g. network timeout) — some authors may be
+    missing
+
+- **Field:** `AUTHORS`
+  - **Meaning:** Comma-separated list — orchestrator offers to build `authors.txt`
 
 ## On error
 
-| Symptom | Likely cause | Fix |
-|---------|-------------|-----|
-| `E170001: Authentication required` | Repo needs credentials | Add `--username <u> --password <p>` to every `svn` call |
-| `E200009: URL does not exist` | Wrong URL | Confirm the URL with the user |
-| `Cannot convert value … to type [xml]` | `svn` wrote an error message instead of XML | Check the raw output: `& svn info --xml $svnUrl 2>&1` |
-| Empty authors list or `AUTHOR_SCAN_COMPLETE: false` | `svn log -q` timed out or failed on a large repo | The full scan failed. Increase bandwidth or run `svn log --xml -q <url>` locally and parse manually: `Select-String '<author>' | ForEach-Object { ($_ -replace '.*<author>(.*)</author>.*','$1').Trim() } \| Sort-Object -Unique` |
-| `svn info` fails on a local repo folder | CWD is a bare SVN repository, not a checkout | Step 1b detects `format`+`db/` and builds `file:///` URL automatically |
+- **Symptom:** `E170001: Authentication required`
+  - **Likely cause:** Repo needs credentials
+  - **Fix:** Add `--username <u> --password <p>` to every `svn` call
+
+- **Symptom:** `E200009: URL does not exist`
+  - **Likely cause:** Wrong URL
+  - **Fix:** Confirm the URL with the user
+
+- **Symptom:** `Cannot convert value … to type [xml]`
+  - **Likely cause:** `svn` wrote an error message instead of XML
+  - **Fix:** Check the raw output: `& svn info --xml $svnUrl 2>&1`
+
+- **Symptom:** Empty authors list or `AUTHOR_SCAN_COMPLETE: false`
+  - **Likely cause:** `svn log -q` timed out or failed on a large repo
+  - **Fix:** The full scan failed. Increase bandwidth or run this locally to parse authors manually:
+
+    ```powershell
+    svn log --xml -q <url> |
+      Select-String '<author>' |
+      ForEach-Object { ($_ -replace '.*<author>(.*)</author>.*','$1').Trim() } |
+      Sort-Object -Unique
+    ```
+
+- **Symptom:** `svn info` fails on a local repo folder
+  - **Likely cause:** CWD is a bare SVN repository, not a checkout
+  - **Fix:** Step 1b detects `format`+`db/` and builds `file:///` URL automatically
