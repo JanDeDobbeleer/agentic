@@ -287,20 +287,20 @@ for _, item := range items {
 
 #### Test behavior, not the patch
 
-Before adding a test, name the observable behavior or meaningful invariant it proves. A regression test must fail on
+Before adding a test, name the observable behavior or invariant it proves. A regression test must fail on
 the code before the fix for the same reason as the reported bug, pass after the fix, and permit correct internal
 refactors.
 
-Do not add tests that merely inspect source code or embedded text for a symbol, statement, condition, string, or the
-relative order of implementation statements. Such tests prove that a patch has a particular shape, not that the
-behavior works. Use text assertions only when the emitted text is itself the contract, such as generated commands,
+Do not add tests that inspect source code or embedded text for a symbol, statement, condition, string, or the relative
+order of statements in the code. Such tests prove that a patch has a particular shape, not that the behavior works.
+Text assertions are appropriate when the emitted text is itself the contract, such as generated commands,
 escaping, serialization, or required output encoding.
 
 Test behavior in the runtime that owns it. A Go test must not inspect an embedded shell script to claim that shell host
 behavior works; use a shell integration test instead. If the available infrastructure cannot exercise the regression,
 state the missing coverage and required manual verification rather than adding a proxy test that cannot catch the bug.
 
-Before keeping a new test, ask:
+Use these checks for every new test:
 
 1. Could the original bug still occur while this test passes?
 2. Could a correct refactor make this test fail?
