@@ -53,6 +53,14 @@ When any tasks run in parallel worktrees, name the integration step now, before 
 - That Verify (Phase 5) only runs once, on the merged state, after every parallel task has landed
   — never per-branch. A per-task green run is not the gate.
 
+## Pressure-test for the simplest fix
+
+Before delegating, ask yourself the question the user would ask: "Is there a more straightforward
+solution?" Compare the pinned spec against the narrowest change that still satisfies the analysis —
+fewer files, fewer new abstractions, less config, no new layer. If a simpler approach meets every
+acceptance criterion and non-goal, use it instead and re-pin the spec. Do this pass yourself, every
+time; don't wait for the user to ask it for you.
+
 ## Output of this phase
 
 A task list where each entry names its executor tier (see Phase 3), its workspace, its
