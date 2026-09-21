@@ -20,31 +20,14 @@ escalation answer) without re-deriving context from scratch.
 ## Roles
 
 Assign work based on model capability. The coordinator is not the strongest model — it's the one that stays resident,
-owns every phase by default, and knows when it's out of its depth.
+owns every phase by default, and knows when it's out of its depth. Four tiers do the work: Coordinator, Escalation,
+Implementer, Trivial. Load the reference matching what's needed:
 
-- **Role:** Coordinator
-  - **Capability tier:** Capable mid-tier, resident for the whole task
-  - **Owns:** Analysis, plan, delegation, supervision, verification, delivery — by default
-
-- **Role:** Escalation
-  - **Capability tier:** Strongest reasoning model available; invoked only on trigger
-  - **Owns:** The specific judgment call the coordinator flagged, then control returns
-
-- **Role:** Implementer
-  - **Capability tier:** Same tier as coordinator, or smaller for trivial edits
-  - **Owns:** Executing one pinned, self-contained task
-
-- **Role:** Trivial
-  - **Capability tier:** Small, fast model for mechanical, unambiguous edits
-  - **Owns:** Batched renames, config tweaks, typo fixes, doc touch-ups — never judgment calls
-
-Concrete model names per vendor (Anthropic, OpenAI, Google) and how to run the split in Claude Code, GitHub Copilot,
-Codex, or IDE agents: [references/model-tiers.md](references/model-tiers.md).
-
-When the current agent already runs at implementer tier, there's no separate delegation step for standard work: plan and
-execute directly, still following every phase. Escalate to the strongest model only when a trigger fires — see
-[references/escalate.md](references/escalate.md) — never by default and never for a routine judgment call the
-coordinator is equipped to make itself.
+- Tier definitions, capability, and ownership per role → LOAD [references/model-tiers.md](references/model-tiers.md)
+  — also covers concrete model names per vendor and how to run the split in Claude Code, GitHub Copilot, Codex, or IDE
+  agents.
+- Matching a task to its executor tier → LOAD [references/delegate.md](references/delegate.md).
+- When to hand a judgment call to Escalation tier → LOAD [references/escalate.md](references/escalate.md).
 
 ## The flow
 
