@@ -33,9 +33,12 @@ task directly (no subagent), apply the same critical pass to its own diff before
 than skipping this phase because there is no one else's work to review:
 
 - Check the diff against the spec: everything asked for, nothing beyond it.
-- Override solutions that are wrong or overbuilt. Prefer the change that removes code over the
-  one that adds it. It is normal to keep a subagent's diagnosis but replace its fix with a
-  simpler one — document the override and its reason for the final report.
+- Ask again, against the actual diff this time: "Is there a more straightforward solution?" A
+  plan can pass the Phase 2 simplicity check and still grow complexity during implementation —
+  extra helpers, defensive branches, config knobs nothing asked for. Override solutions that are
+  wrong or overbuilt. Prefer the change that removes code over the one that adds it. It is normal
+  to keep a subagent's diagnosis but replace its fix with a simpler one — document the override
+  and its reason for the final report.
 - Watch for spec-compliant-but-ugly: a change can satisfy the letter of the spec and still not
   belong in the codebase. Consistency with surrounding code wins.
 
