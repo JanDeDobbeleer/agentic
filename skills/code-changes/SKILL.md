@@ -15,6 +15,9 @@ description: >
 - Look for what already exists before designing anything: a helper, a similar module, a pattern another feature uses,
   a CLI to call instead of reimplementing it. Prefer the smallest change that reuses existing code, and the change that
   removes code over the one that adds it. Deprecated logic gets removed, not maintained.
+- Before proposing anything, ask yourself "is there a more straightforward solution?": fewer files, no new
+  abstraction, layer, or option. Switch to the simpler one when it meets the same goal. Do not leave that question to
+  the user.
 - Report the root cause with file references, the proposed change and its scope, what stays out of scope, and open
   questions.
 - **Stop and wait for a go.** Skip the stop only when the request already asks for the implementation ("fix it",
@@ -44,7 +47,9 @@ For triage only ("look at #n"), the report is the deliverable: add the blast rad
 
 Review every diff as an external pull request, your own included:
 
-- Everything asked for, nothing more. Replace overbuilt solutions with simpler ones.
+- Everything asked for, nothing more. Ask the straightforward-solution question again, against the actual diff:
+  helpers, defensive branches, and options nobody asked for creep in during implementation. Replace overbuilt
+  solutions with simpler ones.
 - Consistency with the surrounding code beats a new pattern.
 - Cut tests that assert implementation details, copy data declared elsewhere in the diff, duplicate another test, or
   would still pass with the bug present.
