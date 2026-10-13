@@ -11,7 +11,7 @@ jobs:
     name: runner / vale
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@b9e0990d219a03df7633c93f6f005a8fecbcab22 # v4
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v4
       - name: Install Vale
         run: |
           curl -sfL https://github.com/errata-ai/vale/releases/download/v3.13.1/vale_3.13.1_Linux_64-bit.tar.gz | tar -xz
